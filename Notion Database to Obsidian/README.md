@@ -335,4 +335,12 @@ injection is a planned future improvement.
 
 ---
 
+## `fix_frontmatter_dates.py`
+
+Migration helper for vaults built by an older version of `notion_db_to_obsidian.py` (before `parse_notion_date()` was added). Walks `.md` files in a folder, finds date-keyed frontmatter values (`created_time`, `last_edited_time`, `created`, `published`, `date`), and rewrites human-readable Notion strings ("April 12, 2022 11:38 AM") to ISO-8601 (`2022-04-12T11:38:00`) so Obsidian Bases types them as datetime instead of text. Idempotent (already-ISO values are skipped). Pure stdlib, zero network. Supports `--dry-run`.
+
+Only touches the *first* YAML frontmatter block at the top of each file — second-block content (e.g., from Obsidian Web Clipper) is left alone since Obsidian doesn't read it as properties anyway.
+
+---
+
 - **Decision log:** see [`CHANGELOG.md`](../CHANGELOG.md) for context, alternatives, and trade-offs behind each significant change.

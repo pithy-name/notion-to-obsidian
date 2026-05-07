@@ -22,32 +22,7 @@ The canonical migration tool. Takes a Notion HTML export (the entries folder, th
 
 ## Legacy CSV-merge scripts (reference only) — `legacy/`
 
-All three live in `legacy/` since 2026-05-04. They do the same shape of job: take a Notion DB CSV, match each row to its per-page body file, and emit a fatter CSV with a `Body` column. They were intended for use with Obsidian's Importer plugin, which throws away property *types* on the way in. Use `notion_db_to_obsidian.py` instead unless you have a specific reason to stay in CSV-land.
-
-### `legacy/merge_notion_db_html.py`
-
-The original script. Outputs **raw HTML** in the Body column. Accepts any folder via CLI, auto-discovers the CSV (same strategy as `merge_notion_db_markdown.py`). Kept as the historical starting point; use `merge_notion_db_markdown.py` for new work since it converts the body to Markdown.
-
-
-### `legacy/merge_notion_db_markdown.py`
-
-Generalized version of the above. Same CSV+HTML inputs, but accepts any folder via CLI, auto-discovers the CSV, handles Notion's filename truncation/punctuation-stripping with prefix matching, and runs the body through `markdownify` so the Body column is **simplified Markdown** instead of raw HTML. Requires `markdownify`.
-
-### `legacy/merge_notion_db_from_md.py`
-
-For the case where the Notion export gave you `.md` files instead of `.html`. No conversion needed, no external dependencies. Strips YAML frontmatter from each `.md` by default (since the same fields are already in the CSV); pass `--keep-frontmatter` to retain it. Handles both Notion-style filenames (`Title abc123.md`) and clean ones (`Title.md`).
-
-
----
-
-## Utility
-
-### `Notion Database to Obsidian/fix_frontmatter_dates.py`
-
-Migration helper for vaults built by an older version of `notion_db_to_obsidian.py` (before `parse_notion_date()` was added). Walks `.md` files in a folder, finds date-keyed frontmatter values (`created_time`, `last_edited_time`, `created`, `published`, `date`), and rewrites human-readable Notion strings ("April 12, 2022 11:38 AM") to ISO-8601 (`2022-04-12T11:38:00`) so Obsidian Bases types them as datetime instead of text. Idempotent (already-ISO values are skipped). Pure stdlib, zero network. Supports `--dry-run`.
-
-Only touches the *first* YAML frontmatter block at the top of each file — second-block content (e.g., from Obsidian Web Clipper) is left alone since Obsidian doesn't read it as properties anyway.
-
+Three older scripts that merge a Notion CSV with per-page body files into a fatter CSV with a `Body` column. Kept for reference; `notion_db_to_obsidian.py` is the current path. See [`legacy/README.md`](./legacy/README.md) for per-script details.
 
 ---
 
