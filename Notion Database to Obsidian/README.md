@@ -220,11 +220,11 @@ Each `.md` has YAML frontmatter like:
 
 ```yaml
 ---
-notion_uuid: af5b29a2-4d10-45ef-8f7e-bcd1f757fd47
+notion_uuid: <notion-uuid>
 tags:
-  - communication
-  - skills
-publisher: Ministry of Testing
+  - <tag-1>
+  - <tag-2>
+publisher: <publisher>
 publish_year: '2020'
 ---
 ```
@@ -296,6 +296,18 @@ injection is a planned future improvement.
 
 ## Known limitations
 
+- **Embedded-database entries lose body content.** A nested database is
+  inlined as a GFM table; each entry's body collapses into a single
+  plain-text "Notes" cell, so images, links, and formatting within
+  nested-DB entries are dropped. (Top-level entries keep images/PDFs as
+  viewable Obsidian embeds — this affects nested-DB entries only.)
+- **Strikethrough is lost.** `~~text~~` comes through unstyled rather
+  than struck.
+- **Rich-text styling is largely stripped.** Indentation and colorized
+  text get flattened by `markdownify`; no current workaround.
+- **URLs in output are live** (planned: defang). Converted bodies keep
+  clickable URLs; a future option will break/defang them so they don't
+  resolve on accidental click.
 - **Text-typed properties stay as text.** If your Notion `Publish Year`
   was a `text` property (not a `number`), it'll be a quoted string in
   YAML. That's faithful to the source; coerce it manually in Obsidian

@@ -3,5 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 test-output/
-session-report-*.html
-scratchpads/
+.claude/
+CLAUDE.local.md
+TODO.md

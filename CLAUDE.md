@@ -4,6 +4,10 @@ Instructions for Claude Code working in this repo.
 
 ---
 
+## Memory
+
+Project memory (user preferences, conventions, the git-rewriting procedure, prior decisions) lives in `~/.claude/projects/<this-project>/memory/`. **Read `MEMORY.md` at session start and pay close attention to recalled memories** — they carry context not duplicated here.
+
 ## No PII or personal data in tracked files
 
 - No real names, email addresses, database names, Notion UUIDs, or absolute paths in any tracked file.
@@ -14,29 +18,25 @@ Instructions for Claude Code working in this repo.
 ## Directory layout
 
 ```
-Notion Database to Obsidian/   # main script + README
-legacy/                        # older merge scripts (kept for reference)
-scratchpads/                   # session design notes (gitignored, not tracked)
-test-output/                   # gitignored; vault + csv trial outputs live here
+Notion Database to Obsidian/   # main script + utility script + README
+legacy/                        # older CSV-merge scripts + README
 ```
 
 ## Git history rewriting
 
-- **Do not use `git filter-repo`** under any circumstances. It resets the working tree to the rewritten HEAD with no warning, deleting tracked files and discarding all uncommitted changes. It also wipes the reflog and prunes all unreachable objects, leaving no git-native recovery path. If history rewriting is genuinely needed, stop and discuss with the user first.
-- **Approved alternative:** orphan branch. `git checkout --orphan <new>` preserves working tree; `git rm --cached -r <path>` unstages what you don't want; `git add -A` + commit = single clean root commit. Delete old branch after. See CHANGELOG for full sequence.
+- **Never run `git filter-repo`.** It hard-resets the working tree with no warning (deletes tracked *and* uncommitted files), wipes the reflog, and prunes unreachable objects — no git-native recovery. If history rewriting is genuinely needed, stop and ask the user first.
+- Safe alternative (orphan-branch procedure): see project memory.
 
 ## Commit workflow
 
 - Commit between each logical fix — not per-file, per logical change.
 - **Always prompt the user before committing.** Ask "Want me to commit this before we continue?" and wait for confirmation.
 - Separate commits for separate concerns. A date-parsing fix and a structural refactor go in different commits even if they touch the same file.
-- Git identity is already set in local config: `pithy-name <pithy.name@fastmail.com>`. Do not change it.
 
 ## Documentation
 
 - **`CHANGELOG.md`** (repo root) — update with every significant decision. Each entry needs: decision, context, alternatives considered, trade-offs. Dates come from git; don't guess.
 - **`README.md`** (repo root) and **`Notion Database to Obsidian/README.md`** — update only when CLI flags, output structure, or user-visible behavior changes. Do not append update chains; those live in CHANGELOG.md. Do not embed session IDs, "maintenance note for Claude" blocks, or any Claude-internal metadata in READMEs — those belong in CLAUDE.md.
-- **Scratchpads** — design plans, session notes, post-mortems, or any misc doc worth capturing. Create in `scratchpads/` with naming convention `SCRATCHPAD-YYYY-MM-DD-topic.md`. Directory is gitignored; files are local only, never committed.
 
 ## Python environment
 
@@ -57,25 +57,10 @@ test-output/                   # gitignored; vault + csv trial outputs live here
 1. Run `--dry-run` against a local HTML export and confirm entry/DB counts look right:
    ```bash
    /usr/bin/python3 "Notion Database to Obsidian/notion_db_to_obsidian.py" \
-     "test-output/<export-folder>" --dry-run
+     "<path-to-html-export>" --dry-run
    ```
 2. If the change touches nested DB rendering or body conversion, spot-check a nested-DB entry in the test output.
 3. Update `CHANGELOG.md` if the change involves a non-obvious decision.
-
-## Known issues and improvements
-
-**Bugs (unresolved):**
-- Image attachments inside embedded DB/table entry bodies don't appear in output.
-- Nested tables render at bottom of file, not at original inline position. Puts them out of context when Notion placed the embed mid-document.
-- Strikethrough text (`~~text~~`) not converting correctly — appears unstyled in output.
-- Rich text styling (indentation, colorized text) largely stripped by `markdownify`. No current workaround.
-
-**Improvements (deferred):**
-- Break/defang URLs in output so they don't resolve on accidental click.
-
-**README cleanup (deferred):**
-- Add `legacy/README.md` with script descriptions; move legacy script blurbs from root `README.md` there to simplify it.
-- Add `fix_frontmatter_dates.py` description to `Notion Database to Obsidian/README.md` (currently only in root README).
 
 ## Key architecture notes
 
