@@ -4,6 +4,27 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-02 — docs restructure
+
+Decision: legacy script blurbs root README → `legacy/README.md`. Add Utility section: `fix_frontmatter_dates.py`. CLAUDE.md → lean orientation doc; user-facing bug notes → script README.
+Why: root README + CLAUDE.md bloated. Split by audience.
+Alt: keep verbose / dump all to READMEs. Chose route-by-audience: user stuff → READMEs, dev gotchas stay CLAUDE.md.
+Tradeoff: knowledge spread across files. Root README points to `legacy/README.md`, no inline.
+
+---
+
+## 2026-06-02 — document known limitations
+
+Decision: add Known limitations to script README.
+- Nested-DB entry body → plain-text Notes cell. Img, link, format dropped. Top-level entries keep img/PDF embeds.
+- Rich-text styling (color, indent) stripped by markdownify.
+- External URLs left live.
+- Strikethrough unstyled.
+Why: behaviors known, lived only in internal notes. Set user expectations.
+Caveat: strikethrough NOT verified vs current export. Flagged test.
+
+---
+
 ## 2026-05-06 — PII scrub and repo prep for public push
 
 **Decision:** Scrubbed personal identifiers from the repo before first public push. Removed the Obsidian vault, CSV trial outputs, and scratchpads from git history and future tracking (moved to `test-output/`, gitignored). Converted `legacy/merge_notion_db_html.py` from hardcoded paths to a proper argparse CLI. Genericized example paths in both READMEs. Removed `<!-- CAUTION -->` banners. Added `test-output/`, `scratchpads/`, and `session-report-*.html` to `.gitignore`.
