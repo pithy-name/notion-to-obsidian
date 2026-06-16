@@ -4,6 +4,16 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-16 — inplace mode: resolve cross-entry attachment links
+
+Decision: in inplace attachment mode, `convert_body` prefixes every local href with the relpath from the output dir to the source-entries folder (new `inplace_link_prefix`), instead of rewriting only this entry's own attachment folder.
+Why: Notion exports all sibling entries into one folder, so one entry can embed another's screenshots ("cross-entry" refs). The old code rewrote only the entry's own folder; cross-entry refs pointed at non-existent output paths and broke (one report resolved 2 of 91 images).
+Also documented: symlink attachment mode does not render in Obsidian (Obsidian doesn't index files inside symlinked dirs) — inplace is the 0-GB mode that resolves to the real exported files. copy/symlink keep their existing same-entry-only behavior (cross-entry stays a known limitation there).
+Verify: full export regenerated with `--inplace` — the cross-entry report went 2/91 → 91/91; a 60-entry sample resolved 536/536 on disk. Caveat: inplace points at the real export inside the vault, so output is not self-contained; Obsidian render should be spot-checked.
+Tests: `Notion Database to Obsidian/test_cross_entry_images.py` (TDD, 5 cases).
+
+---
+
 ## 2026-06-15 — tight Markdown lists
 
 Decision: merge adjacent same-kind sibling `<ul>/<ol>` in the body tree before markdownify, via new `_merge_adjacent_lists()` in `convert_body`.
