@@ -454,6 +454,51 @@ def _clean_source_figures(body_tag: Tag) -> None:
         fig.replace_with(new_p)
 
 
+_LIST_TAGS = ("ul", "ol")
+
+
+def _merge_adjacent_lists(root: Tag) -> None:
+    """
+    Merge runs of adjacent same-kind sibling <ul>/<ol> into a single list.
+
+    Notion exports every bullet and every numbered item as its OWN
+    single-item list element (e.g. a run of `<ul class="bulleted-list">`s,
+    one per bullet; numbered items as `<ol class="numbered-list" start="N">`).
+    markdownify renders each list element as a separate block, so consecutive
+    single-item lists come out as a "loose" list — a blank line between every
+    item. Collapsing them into one list element makes markdownify emit a tight
+    list instead.
+
+    "Same kind" = same tag name AND identical class attribute, so bulleted,
+    numbered, to-do, and toggle lists never merge into one another. A run is
+    only joined when the lists are *immediately* adjacent (only inter-element
+    whitespace between them); any real content (text, <p>, a heading) ends the
+    run, preserving genuinely separate lists. Runs nested inside <li>s are
+    handled too, since every list in the tree is visited.
+    """
+    for lst in root.find_all(_LIST_TAGS):
+        if lst.parent is None:
+            continue  # already absorbed into an earlier sibling this pass
+        kind = (lst.name, tuple(lst.get("class") or []))
+        sib = lst.next_sibling
+        while sib is not None:
+            nxt = sib.next_sibling
+            if isinstance(sib, NavigableString):
+                if sib.strip() == "":
+                    sib = nxt  # skip whitespace between sibling lists
+                    continue
+                break  # real text between the lists — leave them separate
+            if not isinstance(sib, Tag):
+                break
+            if (sib.name, tuple(sib.get("class") or [])) != kind:
+                break  # a different kind of list (or any other element)
+            # Same-kind adjacent list: move its <li>s in, then drop the husk.
+            for li in sib.find_all("li", recursive=False):
+                lst.append(li.extract())
+            sib.decompose()
+            sib = nxt
+
+
 def convert_body(
     body_tag: Optional[Tag],
     *,
@@ -482,6 +527,10 @@ def convert_body(
     # so we don't have to deal with their nested mess later.
     _clean_bookmark_figures(body_tag)
     _clean_source_figures(body_tag)
+
+    # Notion emits one <ul>/<ol> per bullet/number; merge adjacent same-kind
+    # lists so markdownify renders tight lists, not blank-line-separated ones.
+    _merge_adjacent_lists(body_tag)
 
     # Rewrite attachment paths and resolve in-export wikilinks.
     # IMPORTANT: paths in markdown ![](path) and [](path) syntax must be

@@ -4,6 +4,16 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-15 — tight Markdown lists
+
+Decision: merge adjacent same-kind sibling `<ul>/<ol>` in the body tree before markdownify, via new `_merge_adjacent_lists()` in `convert_body`.
+Why: Notion exports every bullet/number as its OWN single-item list element. markdownify renders each as a separate block → a blank line between every item (loose list). Output read as unrefined.
+Alt: (a) regex-collapse blank lines in the Markdown — rejected, can't tell per-item gaps from intentional continuation paragraphs inside an item; (b) markdownify options — none fix one-`<ul>`-per-bullet. Chose tree merge: addresses the real HTML pathology; markdownify then emits tight lists natively.
+Scope guard: "same kind" = same tag + identical class; any real content between lists ends a run. So bulleted/numbered/to-do/toggle never merge into each other and genuinely separate lists stay separate. Frontmatter, image embeds, and `.base` generation untouched (verified).
+Tests: `Notion Database to Obsidian/test_list_merge.py` (TDD, 5 cases).
+
+---
+
 ## 2026-06-02 — docs restructure
 
 Decision: legacy script blurbs root README → `legacy/README.md`. Add Utility section: `fix_frontmatter_dates.py`. CLAUDE.md → lean orientation doc; user-facing bug notes → script README.
