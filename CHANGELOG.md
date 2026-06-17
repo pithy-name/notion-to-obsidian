@@ -16,8 +16,8 @@ Tests: added cases to `test_callouts.py` and `test_person_property.py` (43 tests
 
 ## 2026-06-16 — text properties: bare URL instead of a Markdown link
 
-Decision: when a Notion `text` property's value is exactly one hyperlink, emit the bare URL in frontmatter instead of a `[label](url)` Markdown link (`_unwrap_sole_markdown_link`). Mixed content (text around a link, multiple links) is left as Markdown.
-Why: Obsidian doesn't render Markdown inside YAML frontmatter, so a single-link property came out as the literal string `[label](url)`. The bare URL is clean and usable.
+Decision: when a Notion `text` property's value is exactly one hyperlink, emit the bare URL in frontmatter instead of a `[label](url)` Markdown link (`_sole_anchor_href` — detected on the HTML `<td>`, so any URL works, including ones containing `)`). Mixed content (text around a link, multiple links) is left as Markdown.
+Why: Obsidian doesn't render Markdown inside YAML frontmatter, so a single-link property came out as the literal string `[label](url)`. The bare URL is clean and usable. (HTML-level detection replaced an earlier regex that missed URLs with parentheses.)
 Tests: `Notion Database to Obsidian/test_url_property.py` (TDD, 7 cases).
 
 ---

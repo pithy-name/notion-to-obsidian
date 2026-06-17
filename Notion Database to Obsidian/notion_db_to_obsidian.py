@@ -196,22 +196,26 @@ def td_inner_markdown(td: Tag) -> str:
     return html_to_md(td.decode_contents(), heading_style="ATX").strip()
 
 
-# A property value that is exactly one Markdown link, e.g. "[#chan](https://…)".
-_SOLE_MD_LINK_RE = re.compile(r"^\[[^\]]*\]\((https?://[^)\s]+)\)$")
-
-
-def _unwrap_sole_markdown_link(md: str) -> str:
+def _sole_anchor_href(td: Tag) -> Optional[str]:
     """
-    If a text-property value is exactly one Markdown link, return the bare URL.
+    If a property cell's only meaningful content is a single hyperlink, return
+    its href; otherwise None.
 
-    A Notion `text` property can hold a single hyperlink (e.g. a Slack channel),
-    which markdownify renders as `[label](url)`. Inside a YAML frontmatter value
-    that link syntax is just noise — Obsidian doesn't render Markdown there — so
-    collapse it to the bare URL. Mixed content (text around a link, multiple
-    links) is left as-is.
+    A Notion `text` property can hold one <a> (e.g. a Slack channel). Emitting
+    that as a `[label](url)` Markdown link is noise inside a YAML frontmatter
+    value — Obsidian doesn't render Markdown there — so we surface the bare URL.
+    Detecting this on the HTML (rather than regexing markdownify's output)
+    handles any URL, including ones containing ')'. Mixed content (text around
+    the link, multiple links) yields None and is left as Markdown.
     """
-    m = _SOLE_MD_LINK_RE.match(md.strip())
-    return m.group(1) if m else md
+    meaningful = [
+        c for c in td.children
+        if not (isinstance(c, NavigableString) and not c.strip())
+    ]
+    if len(meaningful) == 1 and isinstance(meaningful[0], Tag) and meaningful[0].name == "a":
+        href = (meaningful[0].get("href") or "").strip()
+        return href or None
+    return None
 
 
 def convert_property_value(ptype: str, td: Tag) -> Any:
@@ -309,13 +313,14 @@ def convert_property_value(ptype: str, td: Tag) -> Any:
         return raw_text or None
 
     # Rich text / title: preserve formatting via Markdown. If the whole value
-    # is a single hyperlink, emit the bare URL (a `[label](url)` Markdown link
+    # is a single hyperlink, emit the bare URL instead (a `[label](url)` link
     # is not useful inside a YAML frontmatter value).
     if ptype in ("text", "title", "rich_text"):
+        sole_href = _sole_anchor_href(td)
+        if sole_href is not None:
+            return sole_href
         md = td_inner_markdown(td)
-        if not md:
-            return None
-        return _unwrap_sole_markdown_link(md)
+        return md or None
 
     # Unknown type: preserve raw text and let the user inspect.
     return raw_text or None
