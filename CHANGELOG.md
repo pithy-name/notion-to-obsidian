@@ -4,6 +4,16 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-17 — revive Notion highlights (background color → ==)
+
+Decision: wrap inline-content `block-color-*_background` elements in `==` so they become Obsidian highlights (`_convert_highlights`, pre-pass). markdownify has no highlight/`<mark>` support, but literal `==` survives. Block-container backgrounds are skipped (avoid `==` spanning blocks); callouts are excluded (converted earlier).
+Why: Notion highlighted text was flattened to plain text.
+Limitation: Obsidian's `==` is one highlight style, so Notion's specific colors collapse to a single highlight. Plain text COLORS (no background) are left as-is — Markdown has no native colored text.
+Verify: full export regenerated — 730 highlights, no empty/malformed markers.
+Tests: `Notion Database to Obsidian/test_highlights.py` (TDD, 6 cases).
+
+---
+
 ## 2026-06-17 — preserve code-block languages
 
 Decision: pass a markdownify `code_language_callback` that reads Notion's `<pre><code class="language-XXX">` and opens the fence with that language (```xxx, lowercased), replacing the fixed `code_language=""` that dropped it.

@@ -629,6 +629,40 @@ def _convert_checkboxes(body_tag: Tag) -> None:
         li.insert(0, NavigableString("[x] " if checked else "[ ] "))
 
 
+_BLOCK_LEVEL_TAGS = {
+    "p", "div", "ul", "ol", "li", "table", "figure", "details", "blockquote",
+    "h1", "h2", "h3", "h4", "h5", "h6", "pre",
+}
+
+
+def _convert_highlights(body_tag: Tag) -> None:
+    """
+    Convert Notion background-colored text into Obsidian highlights (==text==).
+
+    Notion marks a highlighted block/run with a `block-color-*_background` class.
+    markdownify has no highlight support (and strips <mark>), but literal `==`
+    markers survive conversion — so wrap the element's inline content in `==`.
+    Only elements whose content is purely inline are wrapped; a background on a
+    container with block-level children is skipped, to avoid `==` spanning
+    blocks. Notion's specific color is not preserved (Obsidian's `==` is one
+    highlight style). Plain text COLORS (no background) are left as-is —
+    Markdown/Obsidian has no native colored text. Callouts are converted earlier
+    and excluded here.
+    """
+    for el in body_tag.find_all(
+        lambda t: t.has_attr("class")
+        and any(c.startswith("block-color-") and c.endswith("_background") for c in t["class"])
+    ):
+        if "callout" in el.get("class", []):
+            continue
+        if el.find(_BLOCK_LEVEL_TAGS):
+            continue
+        if not el.get_text(strip=True):
+            continue
+        el.insert(0, NavigableString("=="))
+        el.append(NavigableString("=="))
+
+
 _LIST_TAGS = ("ul", "ol")
 
 
@@ -734,6 +768,9 @@ def convert_body(
 
     # Notion to-do items → Obsidian task list items `- [ ]` / `- [x]`.
     _convert_checkboxes(body_tag)
+
+    # Notion background-colored text → Obsidian highlights `==text==`.
+    _convert_highlights(body_tag)
 
     # Notion emits one <ul>/<ol> per bullet/number; merge adjacent same-kind
     # lists so markdownify renders tight lists, not blank-line-separated ones.
