@@ -454,12 +454,58 @@ def _clean_source_figures(body_tag: Tag) -> None:
         fig.replace_with(new_p)
 
 
+_LIST_TAGS = ("ul", "ol")
+
+
+def _merge_adjacent_lists(root: Tag) -> None:
+    """
+    Merge runs of adjacent same-kind sibling <ul>/<ol> into a single list.
+
+    Notion exports every bullet and every numbered item as its OWN
+    single-item list element (e.g. a run of `<ul class="bulleted-list">`s,
+    one per bullet; numbered items as `<ol class="numbered-list" start="N">`).
+    markdownify renders each list element as a separate block, so consecutive
+    single-item lists come out as a "loose" list — a blank line between every
+    item. Collapsing them into one list element makes markdownify emit a tight
+    list instead.
+
+    "Same kind" = same tag name AND identical class attribute, so bulleted,
+    numbered, to-do, and toggle lists never merge into one another. A run is
+    only joined when the lists are *immediately* adjacent (only inter-element
+    whitespace between them); any real content (text, <p>, a heading) ends the
+    run, preserving genuinely separate lists. Runs nested inside <li>s are
+    handled too, since every list in the tree is visited.
+    """
+    for lst in root.find_all(_LIST_TAGS):
+        if lst.parent is None:
+            continue  # already absorbed into an earlier sibling this pass
+        kind = (lst.name, tuple(lst.get("class") or []))
+        sib = lst.next_sibling
+        while sib is not None:
+            nxt = sib.next_sibling
+            if isinstance(sib, NavigableString):
+                if sib.strip() == "":
+                    sib = nxt  # skip whitespace between sibling lists
+                    continue
+                break  # real text between the lists — leave them separate
+            if not isinstance(sib, Tag):
+                break
+            if (sib.name, tuple(sib.get("class") or [])) != kind:
+                break  # a different kind of list (or any other element)
+            # Same-kind adjacent list: move its <li>s in, then drop the husk.
+            for li in sib.find_all("li", recursive=False):
+                lst.append(li.extract())
+            sib.decompose()
+            sib = nxt
+
+
 def convert_body(
     body_tag: Optional[Tag],
     *,
     entry_attachment_dir_basename: Optional[str],
     new_attachment_dir_basename: Optional[str],
     wikilink_map: Dict[str, str],
+    inplace_link_prefix: Optional[str] = None,
 ) -> str:
     """
     Convert the <div class="page-body"> tag into Markdown.
@@ -470,6 +516,14 @@ def convert_body(
       - Replace local-file source <figure> blocks with [filename](path) links.
       - Rewrite <a href="OldFolder%20uuid/file.pdf"> → "NewFolder/file.pdf".
       - Rewrite <a href="OtherEntry%20uuid.html">Title</a> → [[Title]].
+
+    `inplace_link_prefix` (inplace attachment mode only): every local href in a
+    Notion export is relative to the shared source-entries folder — whether it
+    targets this entry's own attachment dir or a SIBLING entry's (cross-entry
+    references). When set, this relpath (output dir → source folder) is prefixed
+    onto every local href, so same-entry AND cross-entry attachments resolve to
+    the real files in the source export. When None, the copy/symlink behavior
+    applies (only this entry's own folder is rewritten).
     """
     if body_tag is None:
         return ""
@@ -482,6 +536,10 @@ def convert_body(
     # so we don't have to deal with their nested mess later.
     _clean_bookmark_figures(body_tag)
     _clean_source_figures(body_tag)
+
+    # Notion emits one <ul>/<ol> per bullet/number; merge adjacent same-kind
+    # lists so markdownify renders tight lists, not blank-line-separated ones.
+    _merge_adjacent_lists(body_tag)
 
     # Rewrite attachment paths and resolve in-export wikilinks.
     # IMPORTANT: paths in markdown ![](path) and [](path) syntax must be
@@ -499,7 +557,20 @@ def convert_body(
         if decoded.startswith(("http://", "https://", "mailto:", "#")):
             continue
 
-        # Attachment under this entry's sibling folder?
+        # Link to another entry in the same database? -> [[wikilink]].
+        # Keys in wikilink_map are decoded relative paths like "Some Title uuid.html".
+        # Checked before any attachment rewrite so .html links never become paths.
+        if decoded in wikilink_map:
+            a.replace_with(f"[[{wikilink_map[decoded]}]]")
+            continue
+
+        # Inplace mode: prefix the relpath to the source export onto every local
+        # href, so this entry's own AND sibling entries' attachments resolve.
+        if inplace_link_prefix is not None:
+            a["href"] = quote(f"{inplace_link_prefix}/{decoded}", safe="/")
+            continue
+
+        # copy/symlink: rewrite only this entry's own attachment folder.
         if (
             entry_attachment_dir_basename
             and new_attachment_dir_basename
@@ -510,12 +581,6 @@ def convert_body(
             a["href"] = quote(new_rel, safe="/")
             continue
 
-        # Link to another entry in the same database?
-        # Keys in wikilink_map are decoded relative paths like "Some Title uuid.html".
-        if decoded in wikilink_map:
-            a.replace_with(f"[[{wikilink_map[decoded]}]]")
-            continue
-
     # Rewrite <img src=...> the same way for local files.
     for img in body_tag.find_all("img"):
         src = img.get("src", "")
@@ -523,6 +588,11 @@ def convert_body(
             continue
         decoded = unquote(src)
         if decoded.startswith(("http://", "https://", "data:")):
+            continue
+        # Inplace mode: prefix the relpath to the source export (same- and
+        # cross-entry images both resolve to the real exported files).
+        if inplace_link_prefix is not None:
+            img["src"] = quote(f"{inplace_link_prefix}/{decoded}", safe="/")
             continue
         if (
             entry_attachment_dir_basename
@@ -1064,12 +1134,20 @@ def write_entry(
             if any(hx in href for hx in nested_db_folder_hexes for href in hrefs):
                 tbl.decompose()
 
-    # Body
+    # Body. In inplace mode, every local href is relative to the source-entries
+    # folder; pass the relpath (md's dir → source folder) so same- and
+    # cross-entry attachments both resolve to the real exported files.
+    inplace_link_prefix = (
+        os.path.relpath(entry["path"].parent.resolve(), out_dir.resolve())
+        if attachment_mode == "inplace"
+        else None
+    )
     body_md = convert_body(
         entry["body"],
         entry_attachment_dir_basename=src_attach_basename,
         new_attachment_dir_basename=new_attach_basename,
         wikilink_map=wikilink_map,
+        inplace_link_prefix=inplace_link_prefix,
     )
 
     # Append inline tables for any nested databases owned by this entry.
