@@ -4,6 +4,85 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-17 — revive Notion highlights (background color → ==)
+
+Decision: wrap inline-content `block-color-*_background` elements in `==` so they become Obsidian highlights (`_convert_highlights`, pre-pass). markdownify has no highlight/`<mark>` support, but literal `==` survives. Block-container backgrounds are skipped (avoid `==` spanning blocks); callouts are excluded (converted earlier).
+Why: Notion highlighted text was flattened to plain text.
+Limitation: Obsidian's `==` is one highlight style, so Notion's specific colors collapse to a single highlight. Plain text COLORS (no background) are left as-is — Markdown has no native colored text.
+Verify: full export regenerated — 730 highlights, no empty/malformed markers.
+Tests: `Notion Database to Obsidian/test_highlights.py` (TDD, 6 cases).
+
+---
+
+## 2026-06-17 — preserve code-block languages
+
+Decision: pass a markdownify `code_language_callback` that reads Notion's `<pre><code class="language-XXX">` and opens the fence with that language (```xxx, lowercased), replacing the fixed `code_language=""` that dropped it.
+Why: language-less fences lose syntax highlighting in Obsidian.
+Tests: `Notion Database to Obsidian/test_code_blocks.py` (TDD, 3 cases).
+
+---
+
+## 2026-06-17 — code-review hardening (callouts, person)
+
+Decision: address red-team findings on the polish branch.
+- Callouts: drop the icon, then move ALL remaining figure content into the callout body — a degenerate single-`<div>` callout (icon + content together) no longer loses its body. Standard two-div exports are unchanged.
+- Person properties: when a cell has avatar chips but no readable name, return None instead of the raw text (which still carried the doubled avatar initial).
+- Dropped redundant `.strip()` in the two tag-property checks (`property_key` already trims).
+Tests: added cases to `test_callouts.py` and `test_person_property.py` (43 tests total, all green).
+
+---
+
+## 2026-06-16 — text properties: bare URL instead of a Markdown link
+
+Decision: when a Notion `text` property's value is exactly one hyperlink, emit the bare URL in frontmatter instead of a `[label](url)` Markdown link (`_sole_anchor_href` — detected on the HTML `<td>`, so any URL works, including ones containing `)`). Mixed content (text around a link, multiple links) is left as Markdown.
+Why: Obsidian doesn't render Markdown inside YAML frontmatter, so a single-link property came out as the literal string `[label](url)`. The bare URL is clean and usable. (HTML-level detection replaced an earlier regex that missed URLs with parentheses.)
+Tests: `Notion Database to Obsidian/test_url_property.py` (TDD, 7 cases).
+
+---
+
+## 2026-06-16 — revive Notion to-do items as Obsidian task lists
+
+Decision: convert Notion to-do items (`<li>` with `<div class="checkbox checkbox-on|off">`) into Markdown task syntax (`_convert_checkboxes`, pre-pass) — `- [x] text` (checked) / `- [ ] text` (unchecked). Adjacent to-do lists merge into one tight task list.
+Why: markdownify dropped the checkbox and rendered a plain bullet, losing the checked/unchecked state.
+Tests: `Notion Database to Obsidian/test_checkboxes.py` (TDD, 4 cases). Verified on a real export (13 task items in a sample entry).
+
+---
+
+## 2026-06-16 — revive Notion toggles as Obsidian foldable callouts
+
+Decision: convert Notion toggles (`<details>`, exported wrapped in `<ul class="toggle">`) into expanded Obsidian foldable callouts (`_convert_toggles`, pre-pass) — `> [!note]+ Title` (still click-to-collapse). The `<ul class="toggle"><li>` wrapper is dropped when it holds only the toggle, so no stray bullet remains. Always expanded: Notion's export marks every toggle `<details open>`, so the attribute carries no real state; expanded keeps content visible while staying collapsible.
+Why: markdownify dropped the collapse and flattened toggles to plain bullets, losing the fold and (for nested toggles) the structure.
+Note: in this DB all toggles are plain (no heading semantics in the HTML), so foldable callouts are the only faithful target. Nested toggles become nested callouts (`> >`); a deeply toggle-nested page becomes deeply nested callouts — faithful but visually heavy.
+Tests: `Notion Database to Obsidian/test_toggles.py` (TDD, 4 cases). Verified on a real export (68 toggles in one entry).
+
+---
+
+## 2026-06-16 — revive Notion callouts as Obsidian callouts
+
+Decision: convert `<figure class="… callout">` into an Obsidian callout (`_convert_callouts`, a pre-pass before markdownify) — a `> [!type] emoji` blockquote with the content quoted beneath it. The callout emoji maps to a type (💡→tip, ❗→warning, ℹ️→info, ✅→success, ❌→failure, 🐛→bug, ❓→question; default note) and is kept in the title.
+Why: markdownify flattened callouts to a stray emoji line plus loose content, losing the block entirely.
+Tests: `Notion Database to Obsidian/test_callouts.py` (TDD, 5 cases). Verified on a real export — all 13 callouts in a sample entry render flush (top-level) or consistently indented (nested in lists).
+
+---
+
+## 2026-06-16 — frontmatter keys: preserve original Notion property names
+
+Decision: frontmatter keys are now the original Notion property name, verbatim and trimmed (`Created time`, `Tester(s)`, `Areas Under Test`) instead of lower_snake_case (`created_time`, `tester_s`, `areas_under_test`). `yamlify_key` → `property_key`. The tag property is matched case-insensitively, so a Notion "Tags" property still feeds Obsidian's tag system.
+Why: lower_snake_case read poorly and broke Obsidian Bases built around the original property names — a hand-made base's columns no longer matched any note's keys. Obsidian property names and Bases columns tolerate spaces/punctuation; PyYAML quotes keys with special characters as needed.
+Trade-off: keys now contain spaces/parens (quoted in YAML); some Dataview setups prefer snake_case, but Bases (this project's target) handles spaced names. `.obsidian/types.json` and the generated `.base` use the same original-name keys.
+Tests: `Notion Database to Obsidian/test_property_keys.py` (TDD, 5 cases).
+
+---
+
+## 2026-06-16 — person properties: strip avatar initial
+
+Decision: in `convert_property_value`, strip each `<span class="user">`'s avatar icon span before reading the name (applies to person / created_by / last_edited_by).
+Why: Notion's person avatar carries the name's initial as text, so a naive `get_text()` glued it onto the name — a person cell came out with its leading character doubled (e.g. `Jane` → `JJane`).
+Alt: regex-trim a leading duplicated character — rejected, it's a guess at the symptom and would corrupt names that legitimately start with a repeated letter. Chose to remove the icon node, the same idiom `parse_entry` already uses for property names.
+Tests: `Notion Database to Obsidian/test_person_property.py` (TDD, 6 cases).
+
+---
+
 ## 2026-06-16 — inplace mode: resolve cross-entry attachment links
 
 Decision: in inplace attachment mode, `convert_body` prefixes every local href with the relpath from the output dir to the source-entries folder (new `inplace_link_prefix`), instead of rewriting only this entry's own attachment folder.

@@ -196,6 +196,28 @@ def td_inner_markdown(td: Tag) -> str:
     return html_to_md(td.decode_contents(), heading_style="ATX").strip()
 
 
+def _sole_anchor_href(td: Tag) -> Optional[str]:
+    """
+    If a property cell's only meaningful content is a single hyperlink, return
+    its href; otherwise None.
+
+    A Notion `text` property can hold one <a> (e.g. a Slack channel). Emitting
+    that as a `[label](url)` Markdown link is noise inside a YAML frontmatter
+    value — Obsidian doesn't render Markdown there — so we surface the bare URL.
+    Detecting this on the HTML (rather than regexing markdownify's output)
+    handles any URL, including ones containing ')'. Mixed content (text around
+    the link, multiple links) yields None and is left as Markdown.
+    """
+    meaningful = [
+        c for c in td.children
+        if not (isinstance(c, NavigableString) and not c.strip())
+    ]
+    if len(meaningful) == 1 and isinstance(meaningful[0], Tag) and meaningful[0].name == "a":
+        href = (meaningful[0].get("href") or "").strip()
+        return href or None
+    return None
+
+
 def convert_property_value(ptype: str, td: Tag) -> Any:
     """
     Convert the value of a Notion property (given its <td> and Notion type)
@@ -247,10 +269,26 @@ def convert_property_value(ptype: str, td: Tag) -> Any:
             return None
         return parse_notion_date(raw_text) or raw_text.lstrip("@")
 
-    # Person-like: created_by, last_edited_by, person
+    # Person-like: created_by, last_edited_by, person.
+    # NOTE: mutates `td` (strips avatar icon spans). Safe — each td is converted
+    # once. Each <span class="user"> holds an avatar icon whose text is the
+    # name's initial, then the name itself — so a naive get_text() yields the
+    # initial doubled ("JJane Doe"). Strip the icon span first (same as
+    # parse_entry does for property names) before reading each user's name.
     if ptype in ("created_by", "last_edited_by", "person"):
-        users = [s.get_text(strip=True) for s in td.find_all(class_="user")]
-        if users:
+        user_spans = td.find_all(class_="user")
+        if user_spans:
+            users = []
+            for u in user_spans:
+                for icon in u.find_all("span", class_="icon"):
+                    icon.decompose()
+                name = u.get_text(strip=True)
+                if name:
+                    users.append(name)
+            # Had user chips but no readable names: return None, NOT raw_text —
+            # raw_text still carries the doubled avatar initial.
+            if not users:
+                return None
             return users[0] if len(users) == 1 else users
         return raw_text or None
 
@@ -274,8 +312,13 @@ def convert_property_value(ptype: str, td: Tag) -> Any:
     if ptype in ("formula", "rollup"):
         return raw_text or None
 
-    # Rich text / title: preserve formatting via Markdown
+    # Rich text / title: preserve formatting via Markdown. If the whole value
+    # is a single hyperlink, emit the bare URL instead (a `[label](url)` link
+    # is not useful inside a YAML frontmatter value).
     if ptype in ("text", "title", "rich_text"):
+        sole_href = _sole_anchor_href(td)
+        if sole_href is not None:
+            return sole_href
         md = td_inner_markdown(td)
         return md or None
 
@@ -327,15 +370,20 @@ def yaml_dump_frontmatter(data: "OrderedDict[str, Any]") -> str:
     return f"---\n{body}---\n"
 
 
-def yamlify_key(name: str) -> str:
+def property_key(name: str) -> str:
     """
-    Turn a human property name into a YAML-key-friendly identifier.
-    Obsidian Bases tolerates spaces, but lower_snake_case is more
-    portable across plugins (Dataview etc.).
+    The frontmatter key for a Notion property: the original property name,
+    preserved verbatim (only surrounding whitespace trimmed).
+
+    Earlier versions lower_snake_cased this ("Created time" -> created_time,
+    "Tester(s)" -> tester_s), which read poorly and — more importantly — broke
+    Obsidian Bases built around the original Notion property names. Obsidian
+    property names and Bases columns tolerate spaces and punctuation, and YAML
+    quotes keys with special characters as needed, so the original name is both
+    safe and what users expect. The tag property is matched case-insensitively
+    by callers, so case is preserved here.
     """
-    key = name.strip().lower()
-    key = re.sub(r"[^\w]+", "_", key, flags=re.UNICODE).strip("_")
-    return key or "property"
+    return name.strip() or "property"
 
 
 def sanitize_obsidian_tag(s: str) -> str:
@@ -454,6 +502,167 @@ def _clean_source_figures(body_tag: Tag) -> None:
         fig.replace_with(new_p)
 
 
+# Notion callout icons (emoji) → Obsidian callout types. Unmapped icons fall
+# back to [!note]; the emoji is always kept in the callout title so nothing is
+# lost.
+_CALLOUT_EMOJI_TYPE = {
+    "💡": "tip", "🔥": "tip",
+    "⚠️": "warning", "⚠": "warning", "❗": "warning", "❕": "warning", "🚨": "warning",
+    "ℹ️": "info", "ℹ": "info",
+    "✅": "success", "✔️": "success", "☑️": "success",
+    "❌": "failure", "🚫": "failure",
+    "🐛": "bug",
+    "❓": "question", "❔": "question",
+    "📝": "note", "📌": "note", "📍": "note",
+}
+
+
+def _convert_callouts(body_tag: Tag) -> None:
+    """
+    Convert Notion callout blocks into Obsidian callouts.
+
+    Notion exports a callout as
+        <figure class="… callout"><div>[emoji icon]</div><div>[content]</div></figure>
+    which markdownify would otherwise flatten to a stray emoji line plus loose
+    content. Turn each into a <blockquote> whose first line is `[!type] emoji`,
+    so markdownify emits an Obsidian callout:
+        > [!tip] 💡
+        > content
+    The emoji maps to a callout type where recognized (else `note`) and is
+    always preserved in the title.
+    """
+    for fig in body_tag.find_all("figure", class_=lambda c: c and "callout" in c):
+        if fig.parent is None:
+            continue
+        icon_span = fig.find("span", class_="icon")
+        emoji = icon_span.get_text(strip=True) if icon_span else ""
+        ctype = _CALLOUT_EMOJI_TYPE.get(emoji, "note")
+
+        # Drop the icon (and its now-empty wrapper div), then move everything
+        # that remains into the callout body. This handles the standard
+        # two-div layout AND the degenerate single-div case (icon and content
+        # in one div) without losing content.
+        if icon_span is not None:
+            wrapper = icon_span.parent
+            icon_span.decompose()
+            if (
+                wrapper is not None
+                and wrapper is not fig
+                and not wrapper.find(True)
+                and not wrapper.get_text(strip=True)
+            ):
+                wrapper.decompose()
+
+        bq = _TAG_FACTORY.new_tag("blockquote")
+        title = _TAG_FACTORY.new_tag("p")
+        title.string = f"[!{ctype}]" + (f" {emoji}" if emoji else "")
+        bq.append(title)
+        for child in list(fig.contents):
+            bq.append(child.extract())
+        fig.replace_with(bq)
+
+
+def _convert_toggles(body_tag: Tag) -> None:
+    """
+    Convert Notion toggles into Obsidian foldable callouts.
+
+    Notion exports a toggle as
+        <ul class="toggle"><li><details [open]><summary>Title</summary>…body…</details></li></ul>
+    (toggle headings export as a bare <details>). markdownify drops the
+    collapse and flattens it to a plain bullet. Turn each <details> into a
+    foldable callout (expanded by default, still click-to-collapse):
+        > [!note]+ Title
+        > body
+    Always expanded (`[!note]+`): Notion's HTML export marks every toggle as
+    <details open>, so that attribute carries no usable collapsed/expanded
+    state — we default to expanded so content is visible while staying
+    collapsible.
+    When the toggle is the sole item of its `<ul class="toggle">` wrapper, the
+    wrapper (and its bullet) is dropped; otherwise only the <details> is
+    replaced, preserving any sibling list items.
+    """
+    for details in body_tag.find_all("details"):
+        if details.parent is None:
+            continue
+        summary = details.find("summary")
+        title = summary.get_text(strip=True) if summary else "Toggle"
+        if summary is not None:
+            summary.extract()
+        bq = _TAG_FACTORY.new_tag("blockquote")
+        title_p = _TAG_FACTORY.new_tag("p")
+        title_p.string = f"[!note]+ {title}".rstrip()
+        bq.append(title_p)
+        for child in list(details.contents):
+            bq.append(child.extract())
+
+        # Drop the `<ul class="toggle"><li>` wrapper when it holds only this
+        # toggle, so we don't emit a stray bullet around the callout.
+        li = details.parent if details.parent.name == "li" else None
+        ul = li.parent if li and li.parent and li.parent.name == "ul" \
+            and any("toggle" in c for c in (li.parent.get("class") or [])) else None
+        if ul is not None and len(ul.find_all("li", recursive=False)) == 1:
+            ul.replace_with(bq)
+        else:
+            details.replace_with(bq)
+
+
+def _convert_checkboxes(body_tag: Tag) -> None:
+    """
+    Convert Notion to-do items into Obsidian task-list items.
+
+    Notion exports a to-do as
+        <ul class="to-do-list"><li><div class="checkbox checkbox-on|off"></div>
+            <span class="to-do-children-…">text</span></li></ul>
+    markdownify drops the checkbox and renders a plain bullet. Replace the
+    checkbox marker with Markdown task syntax so the item becomes `- [x] text`
+    (checked) or `- [ ] text` (unchecked). Adjacent to-do lists are then merged
+    into one tight task list by _merge_adjacent_lists.
+    """
+    for li in body_tag.find_all("li"):
+        # Only this item's own checkbox (direct child) — nested to-dos are their
+        # own <li>s and get handled on their own iteration.
+        cb = li.find("div", class_=lambda c: c and "checkbox" in c, recursive=False)
+        if cb is None:
+            continue
+        checked = any("checkbox-on" in c for c in (cb.get("class") or []))
+        cb.decompose()
+        li.insert(0, NavigableString("[x] " if checked else "[ ] "))
+
+
+_BLOCK_LEVEL_TAGS = {
+    "p", "div", "ul", "ol", "li", "table", "figure", "details", "blockquote",
+    "h1", "h2", "h3", "h4", "h5", "h6", "pre",
+}
+
+
+def _convert_highlights(body_tag: Tag) -> None:
+    """
+    Convert Notion background-colored text into Obsidian highlights (==text==).
+
+    Notion marks a highlighted block/run with a `block-color-*_background` class.
+    markdownify has no highlight support (and strips <mark>), but literal `==`
+    markers survive conversion — so wrap the element's inline content in `==`.
+    Only elements whose content is purely inline are wrapped; a background on a
+    container with block-level children is skipped, to avoid `==` spanning
+    blocks. Notion's specific color is not preserved (Obsidian's `==` is one
+    highlight style). Plain text COLORS (no background) are left as-is —
+    Markdown/Obsidian has no native colored text. Callouts are converted earlier
+    and excluded here.
+    """
+    for el in body_tag.find_all(
+        lambda t: t.has_attr("class")
+        and any(c.startswith("block-color-") and c.endswith("_background") for c in t["class"])
+    ):
+        if "callout" in el.get("class", []):
+            continue
+        if el.find(_BLOCK_LEVEL_TAGS):
+            continue
+        if not el.get_text(strip=True):
+            continue
+        el.insert(0, NavigableString("=="))
+        el.append(NavigableString("=="))
+
+
 _LIST_TAGS = ("ul", "ol")
 
 
@@ -499,6 +708,20 @@ def _merge_adjacent_lists(root: Tag) -> None:
             sib = nxt
 
 
+def _code_language(pre_tag: Tag) -> str:
+    """
+    markdownify code-fence language callback: read Notion's
+    `<pre><code class="language-XXX">` and return the language token (lowercased)
+    so the fence opens with ```xxx. Returns "" (plain fence) when absent.
+    """
+    code = pre_tag.find("code")
+    if code:
+        for c in (code.get("class") or []):
+            if c.startswith("language-"):
+                return c[len("language-"):].strip().lower()
+    return ""
+
+
 def convert_body(
     body_tag: Optional[Tag],
     *,
@@ -536,6 +759,18 @@ def convert_body(
     # so we don't have to deal with their nested mess later.
     _clean_bookmark_figures(body_tag)
     _clean_source_figures(body_tag)
+
+    # Notion callouts (<figure class="callout">) → Obsidian `> [!type]` callouts.
+    _convert_callouts(body_tag)
+
+    # Notion toggles (<details>) → Obsidian foldable callouts `> [!note]-`.
+    _convert_toggles(body_tag)
+
+    # Notion to-do items → Obsidian task list items `- [ ]` / `- [x]`.
+    _convert_checkboxes(body_tag)
+
+    # Notion background-colored text → Obsidian highlights `==text==`.
+    _convert_highlights(body_tag)
 
     # Notion emits one <ul>/<ol> per bullet/number; merge adjacent same-kind
     # lists so markdownify renders tight lists, not blank-line-separated ones.
@@ -606,7 +841,7 @@ def convert_body(
         body_tag.decode_contents(),
         heading_style="ATX",
         bullets="-",
-        code_language="",
+        code_language_callback=_code_language,
     )
     # Clean up extra blank lines markdownify can leave behind.
     md = re.sub(r"\n{3,}", "\n\n", md).strip()
@@ -626,7 +861,7 @@ def discover_schema(entries: List[Dict[str, Any]]) -> "OrderedDict[str, Dict[str
     for entry in entries:
         for pname, ptype, _td in entry["properties"]:
             if pname not in schema:
-                schema[pname] = {"types": Counter(), "key": yamlify_key(pname)}
+                schema[pname] = {"types": Counter(), "key": property_key(pname)}
             schema[pname]["types"][ptype] += 1
     return schema
 
@@ -790,12 +1025,13 @@ NOTION_TO_OBSIDIAN_TYPE = {
 
 def obsidian_type_for(key: str, ptype: str) -> str:
     """
-    Map a Notion property (yamlified key + Notion type) to an Obsidian
-    property type. The "tags" key is special-cased to Obsidian's `tags`
-    type (which feeds the global #tag system) when the source is a
-    multi-select; otherwise it falls back to the type-table.
+    Map a Notion property (property-name key + Notion type) to an Obsidian
+    property type. A "tags" property (matched case-insensitively, e.g. Notion's
+    "Tags") is special-cased to Obsidian's `tags` type (which feeds the global
+    #tag system) when the source is a multi-select; otherwise it falls back to
+    the type-table.
     """
-    if key == "tags" and ptype == "multi_select":
+    if key.lower() == "tags" and ptype == "multi_select":
         return "tags"
     return NOTION_TO_OBSIDIAN_TYPE.get(ptype, "text")
 
@@ -1112,10 +1348,11 @@ def write_entry(
         value = convert_property_value(dominant_type, td)
         if value is None:
             continue
-        # Special case: when a property maps to YAML 'tags', Obsidian treats
-        # those values as actual tags. Tag syntax disallows spaces, parens,
-        # etc., so sanitize each value (e.g., "test plan" -> "test-plan").
-        if info["key"] == "tags":
+        # Special case: a "tags" property (matched case-insensitively, e.g.
+        # Notion's "Tags") feeds Obsidian's tag system, which treats the values
+        # as actual tags. Tag syntax disallows spaces, parens, etc., so
+        # sanitize each value (e.g., "test plan" -> "test-plan").
+        if info["key"].lower() == "tags":
             if isinstance(value, list):
                 value = [t for t in (sanitize_obsidian_tag(v) for v in value) if t]
                 if not value:
