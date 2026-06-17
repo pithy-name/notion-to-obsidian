@@ -522,6 +522,49 @@ def _convert_callouts(body_tag: Tag) -> None:
         fig.replace_with(bq)
 
 
+def _convert_toggles(body_tag: Tag) -> None:
+    """
+    Convert Notion toggles into Obsidian foldable callouts.
+
+    Notion exports a toggle as
+        <ul class="toggle"><li><details [open]><summary>Title</summary>…body…</details></li></ul>
+    (toggle headings export as a bare <details>). markdownify drops the
+    collapse and flattens it to a plain bullet. Turn each <details> into a
+    foldable callout — collapsed `[!note]-` by default, expanded `[!note]+`
+    when the source <details open>:
+        > [!note]- Title
+        > body
+    When the toggle is the sole item of its `<ul class="toggle">` wrapper, the
+    wrapper (and its bullet) is dropped; otherwise only the <details> is
+    replaced, preserving any sibling list items.
+    """
+    for details in body_tag.find_all("details"):
+        if details.parent is None:
+            continue
+        summary = details.find("summary")
+        title = summary.get_text(strip=True) if summary else "Toggle"
+        if summary is not None:
+            summary.extract()
+        fold = "+" if details.has_attr("open") else "-"
+
+        bq = _TAG_FACTORY.new_tag("blockquote")
+        title_p = _TAG_FACTORY.new_tag("p")
+        title_p.string = f"[!note]{fold} {title}".rstrip()
+        bq.append(title_p)
+        for child in list(details.contents):
+            bq.append(child.extract())
+
+        # Drop the `<ul class="toggle"><li>` wrapper when it holds only this
+        # toggle, so we don't emit a stray bullet around the callout.
+        li = details.parent if details.parent.name == "li" else None
+        ul = li.parent if li and li.parent and li.parent.name == "ul" \
+            and any("toggle" in c for c in (li.parent.get("class") or [])) else None
+        if ul is not None and len(ul.find_all("li", recursive=False)) == 1:
+            ul.replace_with(bq)
+        else:
+            details.replace_with(bq)
+
+
 _LIST_TAGS = ("ul", "ol")
 
 
@@ -607,6 +650,9 @@ def convert_body(
 
     # Notion callouts (<figure class="callout">) → Obsidian `> [!type]` callouts.
     _convert_callouts(body_tag)
+
+    # Notion toggles (<details>) → Obsidian foldable callouts `> [!note]-`.
+    _convert_toggles(body_tag)
 
     # Notion emits one <ul>/<ol> per bullet/number; merge adjacent same-kind
     # lists so markdownify renders tight lists, not blank-line-separated ones.

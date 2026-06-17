@@ -4,6 +4,15 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-16 — revive Notion toggles as Obsidian foldable callouts
+
+Decision: convert Notion toggles (`<details>`, exported wrapped in `<ul class="toggle">`) into Obsidian foldable callouts (`_convert_toggles`, pre-pass) — `> [!note]- Title` collapsed, `> [!note]+ Title` when the source `<details open>`. The `<ul class="toggle"><li>` wrapper is dropped when it holds only the toggle, so no stray bullet remains.
+Why: markdownify dropped the collapse and flattened toggles to plain bullets, losing the fold and (for nested toggles) the structure.
+Note: in this DB all toggles are plain (no heading semantics in the HTML), so foldable callouts are the only faithful target. Nested toggles become nested callouts (`> >`); a deeply toggle-nested page becomes deeply nested callouts — faithful but visually heavy.
+Tests: `Notion Database to Obsidian/test_toggles.py` (TDD, 4 cases). Verified on a real export (68 toggles in one entry).
+
+---
+
 ## 2026-06-16 — revive Notion callouts as Obsidian callouts
 
 Decision: convert `<figure class="… callout">` into an Obsidian callout (`_convert_callouts`, a pre-pass before markdownify) — a `> [!type] emoji` blockquote with the content quoted beneath it. The callout emoji maps to a type (💡→tip, ❗→warning, ℹ️→info, ✅→success, ❌→failure, 🐛→bug, ❓→question; default note) and is kept in the title.
