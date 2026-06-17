@@ -265,20 +265,26 @@ def convert_property_value(ptype: str, td: Tag) -> Any:
             return None
         return parse_notion_date(raw_text) or raw_text.lstrip("@")
 
-    # Person-like: created_by, last_edited_by, person
+    # Person-like: created_by, last_edited_by, person.
+    # NOTE: mutates `td` (strips avatar icon spans). Safe — each td is converted
+    # once. Each <span class="user"> holds an avatar icon whose text is the
+    # name's initial, then the name itself — so a naive get_text() yields the
+    # initial doubled ("JJane Doe"). Strip the icon span first (same as
+    # parse_entry does for property names) before reading each user's name.
     if ptype in ("created_by", "last_edited_by", "person"):
-        # Each <span class="user"> holds an avatar icon whose text is the
-        # name's initial, then the name itself — so a naive get_text() yields
-        # the initial doubled ("JJane Doe"). Strip the icon span first (same as
-        # parse_entry does for property names) before reading each user's name.
-        users = []
-        for u in td.find_all(class_="user"):
-            for icon in u.find_all("span", class_="icon"):
-                icon.decompose()
-            name = u.get_text(strip=True)
-            if name:
-                users.append(name)
-        if users:
+        user_spans = td.find_all(class_="user")
+        if user_spans:
+            users = []
+            for u in user_spans:
+                for icon in u.find_all("span", class_="icon"):
+                    icon.decompose()
+                name = u.get_text(strip=True)
+                if name:
+                    users.append(name)
+            # Had user chips but no readable names: return None, NOT raw_text —
+            # raw_text still carries the doubled avatar initial.
+            if not users:
+                return None
             return users[0] if len(users) == 1 else users
         return raw_text or None
 
@@ -527,20 +533,27 @@ def _convert_callouts(body_tag: Tag) -> None:
         emoji = icon_span.get_text(strip=True) if icon_span else ""
         ctype = _CALLOUT_EMOJI_TYPE.get(emoji, "note")
 
-        # Content = the figure's child div(s) that don't hold the icon.
-        content_div = None
-        for d in fig.find_all("div", recursive=False):
-            if icon_span is not None and d.find("span", class_="icon"):
-                continue
-            content_div = d
-            break
+        # Drop the icon (and its now-empty wrapper div), then move everything
+        # that remains into the callout body. This handles the standard
+        # two-div layout AND the degenerate single-div case (icon and content
+        # in one div) without losing content.
+        if icon_span is not None:
+            wrapper = icon_span.parent
+            icon_span.decompose()
+            if (
+                wrapper is not None
+                and wrapper is not fig
+                and not wrapper.find(True)
+                and not wrapper.get_text(strip=True)
+            ):
+                wrapper.decompose()
 
         bq = _TAG_FACTORY.new_tag("blockquote")
         title = _TAG_FACTORY.new_tag("p")
         title.string = f"[!{ctype}]" + (f" {emoji}" if emoji else "")
         bq.append(title)
-        if content_div is not None:
-            bq.append(content_div.extract())
+        for child in list(fig.contents):
+            bq.append(child.extract())
         fig.replace_with(bq)
 
 
@@ -961,7 +974,7 @@ def obsidian_type_for(key: str, ptype: str) -> str:
     #tag system) when the source is a multi-select; otherwise it falls back to
     the type-table.
     """
-    if key.strip().lower() == "tags" and ptype == "multi_select":
+    if key.lower() == "tags" and ptype == "multi_select":
         return "tags"
     return NOTION_TO_OBSIDIAN_TYPE.get(ptype, "text")
 
@@ -1282,7 +1295,7 @@ def write_entry(
         # Notion's "Tags") feeds Obsidian's tag system, which treats the values
         # as actual tags. Tag syntax disallows spaces, parens, etc., so
         # sanitize each value (e.g., "test plan" -> "test-plan").
-        if info["key"].strip().lower() == "tags":
+        if info["key"].lower() == "tags":
             if isinstance(value, list):
                 value = [t for t in (sanitize_obsidian_tag(v) for v in value) if t]
                 if not value:

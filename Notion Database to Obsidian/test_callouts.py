@@ -62,6 +62,14 @@ class Callouts(unittest.TestCase):
         md = conv(callout("💡", "line one"))
         self.assertIn("> [!tip] 💡\n>\n> line one", md)
 
+    def test_icon_and_content_in_one_div_keeps_content(self):
+        # Degenerate layout: icon and body share a single <div>. Content must
+        # not be dropped.
+        html = '<figure class="callout"><div><span class="icon">💡</span> inline body kept</div></figure>'
+        md = conv(html)
+        self.assertIn("> [!tip]", md)
+        self.assertIn("inline body kept", md)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -70,6 +70,15 @@ class PersonAvatarInitial(unittest.TestCase):
     def test_empty_person_cell_is_none(self):
         self.assertIsNone(ndo.convert_property_value("person", td("")))
 
+    def test_user_with_icon_but_no_name_is_none_not_doubled(self):
+        # Icon present, no readable name -> None, not the doubled avatar initial.
+        html = (
+            '<span class="user">'
+            '<span class="icon text-icon user-icon"><span class="user-icon-inner">J</span></span>'
+            "</span>"
+        )
+        self.assertIsNone(ndo.convert_property_value("person", td(html)))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

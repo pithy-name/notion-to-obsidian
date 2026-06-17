@@ -4,6 +4,16 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-17 — code-review hardening (callouts, person)
+
+Decision: address red-team findings on the polish branch.
+- Callouts: drop the icon, then move ALL remaining figure content into the callout body — a degenerate single-`<div>` callout (icon + content together) no longer loses its body. Standard two-div exports are unchanged.
+- Person properties: when a cell has avatar chips but no readable name, return None instead of the raw text (which still carried the doubled avatar initial).
+- Dropped redundant `.strip()` in the two tag-property checks (`property_key` already trims).
+Tests: added cases to `test_callouts.py` and `test_person_property.py` (43 tests total, all green).
+
+---
+
 ## 2026-06-16 — text properties: bare URL instead of a Markdown link
 
 Decision: when a Notion `text` property's value is exactly one hyperlink, emit the bare URL in frontmatter instead of a `[label](url)` Markdown link (`_unwrap_sole_markdown_link`). Mixed content (text around a link, multiple links) is left as Markdown.
