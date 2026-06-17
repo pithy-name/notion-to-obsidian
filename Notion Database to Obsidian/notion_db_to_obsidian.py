@@ -565,12 +565,13 @@ def _convert_toggles(body_tag: Tag) -> None:
         <ul class="toggle"><li><details [open]><summary>Title</summary>…body…</details></li></ul>
     (toggle headings export as a bare <details>). markdownify drops the
     collapse and flattens it to a plain bullet. Turn each <details> into a
-    foldable callout that stays click-to-expand:
-        > [!note]- Title
+    foldable callout (expanded by default, still click-to-collapse):
+        > [!note]+ Title
         > body
-    Always collapsed (`[!note]-`): Notion's HTML export marks every toggle as
+    Always expanded (`[!note]+`): Notion's HTML export marks every toggle as
     <details open>, so that attribute carries no usable collapsed/expanded
-    state — defaulting to collapsed matches a toggle's click-to-expand purpose.
+    state — we default to expanded so content is visible while staying
+    collapsible.
     When the toggle is the sole item of its `<ul class="toggle">` wrapper, the
     wrapper (and its bullet) is dropped; otherwise only the <details> is
     replaced, preserving any sibling list items.
@@ -584,7 +585,7 @@ def _convert_toggles(body_tag: Tag) -> None:
             summary.extract()
         bq = _TAG_FACTORY.new_tag("blockquote")
         title_p = _TAG_FACTORY.new_tag("p")
-        title_p.string = f"[!note]- {title}".rstrip()
+        title_p.string = f"[!note]+ {title}".rstrip()
         bq.append(title_p)
         for child in list(details.contents):
             bq.append(child.extract())

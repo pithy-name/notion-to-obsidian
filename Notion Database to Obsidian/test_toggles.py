@@ -4,9 +4,12 @@ Tests for Notion toggle → Obsidian foldable callout conversion.
 
 Notion exports a toggle as
     <ul class="toggle"><li><details [open]><summary>Title</summary>body</details></li></ul>
-which should become a foldable Obsidian callout:
-    > [!note]- Title      (collapsed; `+` when source <details open>)
+which should become an EXPANDED, still-collapsible Obsidian callout:
+    > [!note]+ Title
     > body
+
+(Notion's export marks every toggle <details open>, so the attribute carries
+no real state; we default to expanded — content visible, still click-to-collapse.)
 
 Run:  /usr/bin/python3 "Notion Database to Obsidian/test_toggles.py"
 """
@@ -34,25 +37,23 @@ def conv(html: str) -> str:
 
 
 class Toggles(unittest.TestCase):
-    def test_toggle_becomes_collapsed_foldable_callout(self):
+    def test_toggle_becomes_expanded_foldable_callout(self):
         html = '<ul class="toggle"><li><details><summary>Details title</summary><p>hidden content</p></details></li></ul>'
         md = conv(html)
-        self.assertIn("> [!note]- Details title", md)
+        self.assertIn("> [!note]+ Details title", md)
         self.assertIn("> hidden content", md)
         self.assertNotIn("- > ", md)  # no stray bullet wrapping the callout
 
-    def test_open_attr_ignored_default_collapsed(self):
-        # Notion's HTML export marks every toggle <details open>, so the open
-        # attribute carries no real state; toggles default to collapsed so they
-        # stay click-to-expand.
+    def test_open_attr_ignored_default_expanded(self):
+        # Notion marks every toggle <details open>; we always emit expanded `+`.
         html = '<ul class="toggle"><li><details open><summary>Open one</summary><p>body</p></details></li></ul>'
         md = conv(html)
-        self.assertIn("> [!note]- Open one", md)
-        self.assertNotIn("[!note]+", md)
+        self.assertIn("> [!note]+ Open one", md)
+        self.assertNotIn("[!note]-", md)
 
     def test_standalone_details_heading(self):
         md = conv('<details><summary>Bare</summary><p>x</p></details>')
-        self.assertIn("> [!note]- Bare", md)
+        self.assertIn("> [!note]+ Bare", md)
         self.assertIn("> x", md)
 
     def test_toggle_nested_in_bullet_keeps_parent_bullet(self):
@@ -63,7 +64,7 @@ class Toggles(unittest.TestCase):
         )
         md = conv(html)
         self.assertIn("- Parent", md)
-        self.assertIn("> [!note]- Child toggle", md)
+        self.assertIn("> [!note]+ Child toggle", md)
 
 
 if __name__ == "__main__":
