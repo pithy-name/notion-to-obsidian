@@ -4,6 +4,14 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-17 — preserve code-block languages
+
+Decision: pass a markdownify `code_language_callback` that reads Notion's `<pre><code class="language-XXX">` and opens the fence with that language (```xxx, lowercased), replacing the fixed `code_language=""` that dropped it.
+Why: language-less fences lose syntax highlighting in Obsidian.
+Tests: `Notion Database to Obsidian/test_code_blocks.py` (TDD, 3 cases).
+
+---
+
 ## 2026-06-17 — code-review hardening (callouts, person)
 
 Decision: address red-team findings on the polish branch.

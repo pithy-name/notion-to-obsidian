@@ -674,6 +674,20 @@ def _merge_adjacent_lists(root: Tag) -> None:
             sib = nxt
 
 
+def _code_language(pre_tag: Tag) -> str:
+    """
+    markdownify code-fence language callback: read Notion's
+    `<pre><code class="language-XXX">` and return the language token (lowercased)
+    so the fence opens with ```xxx. Returns "" (plain fence) when absent.
+    """
+    code = pre_tag.find("code")
+    if code:
+        for c in (code.get("class") or []):
+            if c.startswith("language-"):
+                return c[len("language-"):].strip().lower()
+    return ""
+
+
 def convert_body(
     body_tag: Optional[Tag],
     *,
@@ -790,7 +804,7 @@ def convert_body(
         body_tag.decode_contents(),
         heading_style="ATX",
         bullets="-",
-        code_language="",
+        code_language_callback=_code_language,
     )
     # Clean up extra blank lines markdownify can leave behind.
     md = re.sub(r"\n{3,}", "\n\n", md).strip()
