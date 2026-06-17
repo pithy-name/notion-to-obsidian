@@ -469,6 +469,59 @@ def _clean_source_figures(body_tag: Tag) -> None:
         fig.replace_with(new_p)
 
 
+# Notion callout icons (emoji) → Obsidian callout types. Unmapped icons fall
+# back to [!note]; the emoji is always kept in the callout title so nothing is
+# lost.
+_CALLOUT_EMOJI_TYPE = {
+    "💡": "tip", "🔥": "tip",
+    "⚠️": "warning", "⚠": "warning", "❗": "warning", "❕": "warning", "🚨": "warning",
+    "ℹ️": "info", "ℹ": "info",
+    "✅": "success", "✔️": "success", "☑️": "success",
+    "❌": "failure", "🚫": "failure",
+    "🐛": "bug",
+    "❓": "question", "❔": "question",
+    "📝": "note", "📌": "note", "📍": "note",
+}
+
+
+def _convert_callouts(body_tag: Tag) -> None:
+    """
+    Convert Notion callout blocks into Obsidian callouts.
+
+    Notion exports a callout as
+        <figure class="… callout"><div>[emoji icon]</div><div>[content]</div></figure>
+    which markdownify would otherwise flatten to a stray emoji line plus loose
+    content. Turn each into a <blockquote> whose first line is `[!type] emoji`,
+    so markdownify emits an Obsidian callout:
+        > [!tip] 💡
+        > content
+    The emoji maps to a callout type where recognized (else `note`) and is
+    always preserved in the title.
+    """
+    for fig in body_tag.find_all("figure", class_=lambda c: c and "callout" in c):
+        if fig.parent is None:
+            continue
+        icon_span = fig.find("span", class_="icon")
+        emoji = icon_span.get_text(strip=True) if icon_span else ""
+        ctype = _CALLOUT_EMOJI_TYPE.get(emoji, "note")
+
+        # Content = the figure's child div(s) that don't hold the icon.
+        content_div = None
+        for d in fig.find_all("div", recursive=False):
+            if icon_span is not None and d.find("span", class_="icon"):
+                continue
+            content_div = d
+            break
+
+        bq = _TAG_FACTORY.new_tag("blockquote")
+        title = _TAG_FACTORY.new_tag("p")
+        title.string = f"[!{ctype}]" + (f" {emoji}" if emoji else "")
+        bq.append(title)
+        if content_div is not None:
+            bq.append(content_div.extract())
+        fig.replace_with(bq)
+
+
 _LIST_TAGS = ("ul", "ol")
 
 
@@ -551,6 +604,9 @@ def convert_body(
     # so we don't have to deal with their nested mess later.
     _clean_bookmark_figures(body_tag)
     _clean_source_figures(body_tag)
+
+    # Notion callouts (<figure class="callout">) → Obsidian `> [!type]` callouts.
+    _convert_callouts(body_tag)
 
     # Notion emits one <ul>/<ol> per bullet/number; merge adjacent same-kind
     # lists so markdownify renders tight lists, not blank-line-separated ones.

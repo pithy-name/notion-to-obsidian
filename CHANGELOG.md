@@ -4,6 +4,14 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-16 — revive Notion callouts as Obsidian callouts
+
+Decision: convert `<figure class="… callout">` into an Obsidian callout (`_convert_callouts`, a pre-pass before markdownify) — a `> [!type] emoji` blockquote with the content quoted beneath it. The callout emoji maps to a type (💡→tip, ❗→warning, ℹ️→info, ✅→success, ❌→failure, 🐛→bug, ❓→question; default note) and is kept in the title.
+Why: markdownify flattened callouts to a stray emoji line plus loose content, losing the block entirely.
+Tests: `Notion Database to Obsidian/test_callouts.py` (TDD, 5 cases). Verified on a real export — all 13 callouts in a sample entry render flush (top-level) or consistently indented (nested in lists).
+
+---
+
 ## 2026-06-16 — frontmatter keys: preserve original Notion property names
 
 Decision: frontmatter keys are now the original Notion property name, verbatim and trimmed (`Created time`, `Tester(s)`, `Areas Under Test`) instead of lower_snake_case (`created_time`, `tester_s`, `areas_under_test`). `yamlify_key` → `property_key`. The tag property is matched case-insensitively, so a Notion "Tags" property still feeds Obsidian's tag system.
