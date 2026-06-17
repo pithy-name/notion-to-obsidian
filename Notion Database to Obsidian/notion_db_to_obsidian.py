@@ -1483,6 +1483,75 @@ def discover_databases(
     return top_level_dbs, nested_dbs, parents, standalones
 
 
+def discover_tree(src: Path) -> Dict[str, Any]:
+    """
+    Walk `src` and build the full nesting tree at ANY depth — no depth ceiling
+    and no requirement that a database exist (supersedes discover_databases).
+
+    Returns:
+        {
+          "databases": [
+            {entries_folder, entry_paths, name, hex, index_path, owner_hex, depth},
+            ...
+          ],
+          "pages": [  # standalone (non-database) pages
+            {path, name, hex, owner_hex, depth}, ...
+          ],
+        }
+
+    A database is a folder of entry-HTMLs. Its owner is the node (entry or page)
+    whose attachment folder — Notion names it "<Title> <32-hex>" — contains the
+    database folder, resolved by that hex. `owner_hex` is None when the database
+    or page sits directly under `src` (top level). Index/collection-content
+    pages are attached to their database as `index_path`, not treated as
+    standalone pages.
+    """
+    entries_by_folder: Dict[Path, List[Path]] = defaultdict(list)
+    index_by_hex: Dict[str, Path] = {}
+    page_paths: List[Path] = []
+    for html in sorted(src.rglob("*.html")):
+        kind = classify_html(html)
+        if kind == "entry":
+            entries_by_folder[html.parent].append(html)
+        elif kind == "parent":
+            h = extract_notion_id(html.name)
+            if h:
+                index_by_hex[h] = html
+        elif kind == "page":
+            page_paths.append(html)
+
+    def owner_hex_of(path_obj: Path) -> Optional[str]:
+        parent = path_obj.parent
+        if parent == src:
+            return None
+        return extract_notion_id(parent.name)
+
+    databases: List[Dict[str, Any]] = []
+    for ef, paths in entries_by_folder.items():
+        h = extract_notion_id(ef.name)
+        databases.append({
+            "entries_folder": ef,
+            "entry_paths": sorted(paths),
+            "name": strip_notion_id(ef.name).strip() or ef.name,
+            "hex": h,
+            "index_path": index_by_hex.get(h) if h else None,
+            "owner_hex": owner_hex_of(ef),
+            "depth": len(ef.relative_to(src).parts),
+        })
+
+    pages: List[Dict[str, Any]] = []
+    for p in page_paths:
+        pages.append({
+            "path": p,
+            "name": strip_notion_id(p.stem).strip() or p.stem,
+            "hex": extract_notion_id(p.name),
+            "owner_hex": owner_hex_of(p),
+            "depth": len(p.relative_to(src).parts) - 1,
+        })
+
+    return {"databases": databases, "pages": pages}
+
+
 def process_database(
     entries_folder: Path,
     entry_paths: List[Path],
