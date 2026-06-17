@@ -4,6 +4,15 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-16 — person properties: strip avatar initial
+
+Decision: in `convert_property_value`, strip each `<span class="user">`'s avatar icon span before reading the name (applies to person / created_by / last_edited_by).
+Why: Notion's person avatar carries the name's initial as text, so a naive `get_text()` glued it onto the name — a person cell came out with its leading character doubled (e.g. `Jane` → `JJane`).
+Alt: regex-trim a leading duplicated character — rejected, it's a guess at the symptom and would corrupt names that legitimately start with a repeated letter. Chose to remove the icon node, the same idiom `parse_entry` already uses for property names.
+Tests: `Notion Database to Obsidian/test_person_property.py` (TDD, 6 cases).
+
+---
+
 ## 2026-06-16 — inplace mode: resolve cross-entry attachment links
 
 Decision: in inplace attachment mode, `convert_body` prefixes every local href with the relpath from the output dir to the source-entries folder (new `inplace_link_prefix`), instead of rewriting only this entry's own attachment folder.

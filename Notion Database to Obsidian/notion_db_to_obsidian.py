@@ -249,7 +249,17 @@ def convert_property_value(ptype: str, td: Tag) -> Any:
 
     # Person-like: created_by, last_edited_by, person
     if ptype in ("created_by", "last_edited_by", "person"):
-        users = [s.get_text(strip=True) for s in td.find_all(class_="user")]
+        # Each <span class="user"> holds an avatar icon whose text is the
+        # name's initial, then the name itself — so a naive get_text() yields
+        # the initial doubled ("JJane Doe"). Strip the icon span first (same as
+        # parse_entry does for property names) before reading each user's name.
+        users = []
+        for u in td.find_all(class_="user"):
+            for icon in u.find_all("span", class_="icon"):
+                icon.decompose()
+            name = u.get_text(strip=True)
+            if name:
+                users.append(name)
         if users:
             return users[0] if len(users) == 1 else users
         return raw_text or None
