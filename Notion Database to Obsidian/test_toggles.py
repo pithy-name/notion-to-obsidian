@@ -41,9 +41,14 @@ class Toggles(unittest.TestCase):
         self.assertIn("> hidden content", md)
         self.assertNotIn("- > ", md)  # no stray bullet wrapping the callout
 
-    def test_open_toggle_is_expanded(self):
+    def test_open_attr_ignored_default_collapsed(self):
+        # Notion's HTML export marks every toggle <details open>, so the open
+        # attribute carries no real state; toggles default to collapsed so they
+        # stay click-to-expand.
         html = '<ul class="toggle"><li><details open><summary>Open one</summary><p>body</p></details></li></ul>'
-        self.assertIn("> [!note]+ Open one", conv(html))
+        md = conv(html)
+        self.assertIn("> [!note]- Open one", md)
+        self.assertNotIn("[!note]+", md)
 
     def test_standalone_details_heading(self):
         md = conv('<details><summary>Bare</summary><p>x</p></details>')

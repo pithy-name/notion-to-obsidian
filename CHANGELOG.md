@@ -22,7 +22,7 @@ Tests: `Notion Database to Obsidian/test_checkboxes.py` (TDD, 4 cases). Verified
 
 ## 2026-06-16 — revive Notion toggles as Obsidian foldable callouts
 
-Decision: convert Notion toggles (`<details>`, exported wrapped in `<ul class="toggle">`) into Obsidian foldable callouts (`_convert_toggles`, pre-pass) — `> [!note]- Title` collapsed, `> [!note]+ Title` when the source `<details open>`. The `<ul class="toggle"><li>` wrapper is dropped when it holds only the toggle, so no stray bullet remains.
+Decision: convert Notion toggles (`<details>`, exported wrapped in `<ul class="toggle">`) into collapsed Obsidian foldable callouts (`_convert_toggles`, pre-pass) — `> [!note]- Title` (click to expand). The `<ul class="toggle"><li>` wrapper is dropped when it holds only the toggle, so no stray bullet remains. Always collapsed: Notion's export marks every toggle `<details open>`, so the attribute carries no real state; collapsed matches a toggle's click-to-expand purpose.
 Why: markdownify dropped the collapse and flattened toggles to plain bullets, losing the fold and (for nested toggles) the structure.
 Note: in this DB all toggles are plain (no heading semantics in the HTML), so foldable callouts are the only faithful target. Nested toggles become nested callouts (`> >`); a deeply toggle-nested page becomes deeply nested callouts — faithful but visually heavy.
 Tests: `Notion Database to Obsidian/test_toggles.py` (TDD, 4 cases). Verified on a real export (68 toggles in one entry).
