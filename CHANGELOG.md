@@ -4,6 +4,14 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-16 — text properties: bare URL instead of a Markdown link
+
+Decision: when a Notion `text` property's value is exactly one hyperlink, emit the bare URL in frontmatter instead of a `[label](url)` Markdown link (`_unwrap_sole_markdown_link`). Mixed content (text around a link, multiple links) is left as Markdown.
+Why: Obsidian doesn't render Markdown inside YAML frontmatter, so a single-link property came out as the literal string `[label](url)`. The bare URL is clean and usable.
+Tests: `Notion Database to Obsidian/test_url_property.py` (TDD, 7 cases).
+
+---
+
 ## 2026-06-16 — revive Notion to-do items as Obsidian task lists
 
 Decision: convert Notion to-do items (`<li>` with `<div class="checkbox checkbox-on|off">`) into Markdown task syntax (`_convert_checkboxes`, pre-pass) — `- [x] text` (checked) / `- [ ] text` (unchecked). Adjacent to-do lists merge into one tight task list.

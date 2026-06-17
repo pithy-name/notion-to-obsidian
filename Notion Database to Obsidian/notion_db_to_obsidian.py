@@ -196,6 +196,24 @@ def td_inner_markdown(td: Tag) -> str:
     return html_to_md(td.decode_contents(), heading_style="ATX").strip()
 
 
+# A property value that is exactly one Markdown link, e.g. "[#chan](https://…)".
+_SOLE_MD_LINK_RE = re.compile(r"^\[[^\]]*\]\((https?://[^)\s]+)\)$")
+
+
+def _unwrap_sole_markdown_link(md: str) -> str:
+    """
+    If a text-property value is exactly one Markdown link, return the bare URL.
+
+    A Notion `text` property can hold a single hyperlink (e.g. a Slack channel),
+    which markdownify renders as `[label](url)`. Inside a YAML frontmatter value
+    that link syntax is just noise — Obsidian doesn't render Markdown there — so
+    collapse it to the bare URL. Mixed content (text around a link, multiple
+    links) is left as-is.
+    """
+    m = _SOLE_MD_LINK_RE.match(md.strip())
+    return m.group(1) if m else md
+
+
 def convert_property_value(ptype: str, td: Tag) -> Any:
     """
     Convert the value of a Notion property (given its <td> and Notion type)
@@ -284,10 +302,14 @@ def convert_property_value(ptype: str, td: Tag) -> Any:
     if ptype in ("formula", "rollup"):
         return raw_text or None
 
-    # Rich text / title: preserve formatting via Markdown
+    # Rich text / title: preserve formatting via Markdown. If the whole value
+    # is a single hyperlink, emit the bare URL (a `[label](url)` Markdown link
+    # is not useful inside a YAML frontmatter value).
     if ptype in ("text", "title", "rich_text"):
         md = td_inner_markdown(td)
-        return md or None
+        if not md:
+            return None
+        return _unwrap_sole_markdown_link(md)
 
     # Unknown type: preserve raw text and let the user inspect.
     return raw_text or None
