@@ -4,6 +4,15 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-16 — frontmatter keys: preserve original Notion property names
+
+Decision: frontmatter keys are now the original Notion property name, verbatim and trimmed (`Created time`, `Tester(s)`, `Areas Under Test`) instead of lower_snake_case (`created_time`, `tester_s`, `areas_under_test`). `yamlify_key` → `property_key`. The tag property is matched case-insensitively, so a Notion "Tags" property still feeds Obsidian's tag system.
+Why: lower_snake_case read poorly and broke Obsidian Bases built around the original property names — a hand-made base's columns no longer matched any note's keys. Obsidian property names and Bases columns tolerate spaces/punctuation; PyYAML quotes keys with special characters as needed.
+Trade-off: keys now contain spaces/parens (quoted in YAML); some Dataview setups prefer snake_case, but Bases (this project's target) handles spaced names. `.obsidian/types.json` and the generated `.base` use the same original-name keys.
+Tests: `Notion Database to Obsidian/test_property_keys.py` (TDD, 5 cases).
+
+---
+
 ## 2026-06-16 — person properties: strip avatar initial
 
 Decision: in `convert_property_value`, strip each `<span class="user">`'s avatar icon span before reading the name (applies to person / created_by / last_edited_by).

@@ -337,15 +337,20 @@ def yaml_dump_frontmatter(data: "OrderedDict[str, Any]") -> str:
     return f"---\n{body}---\n"
 
 
-def yamlify_key(name: str) -> str:
+def property_key(name: str) -> str:
     """
-    Turn a human property name into a YAML-key-friendly identifier.
-    Obsidian Bases tolerates spaces, but lower_snake_case is more
-    portable across plugins (Dataview etc.).
+    The frontmatter key for a Notion property: the original property name,
+    preserved verbatim (only surrounding whitespace trimmed).
+
+    Earlier versions lower_snake_cased this ("Created time" -> created_time,
+    "Tester(s)" -> tester_s), which read poorly and — more importantly — broke
+    Obsidian Bases built around the original Notion property names. Obsidian
+    property names and Bases columns tolerate spaces and punctuation, and YAML
+    quotes keys with special characters as needed, so the original name is both
+    safe and what users expect. The tag property is matched case-insensitively
+    by callers, so case is preserved here.
     """
-    key = name.strip().lower()
-    key = re.sub(r"[^\w]+", "_", key, flags=re.UNICODE).strip("_")
-    return key or "property"
+    return name.strip() or "property"
 
 
 def sanitize_obsidian_tag(s: str) -> str:
@@ -636,7 +641,7 @@ def discover_schema(entries: List[Dict[str, Any]]) -> "OrderedDict[str, Dict[str
     for entry in entries:
         for pname, ptype, _td in entry["properties"]:
             if pname not in schema:
-                schema[pname] = {"types": Counter(), "key": yamlify_key(pname)}
+                schema[pname] = {"types": Counter(), "key": property_key(pname)}
             schema[pname]["types"][ptype] += 1
     return schema
 
@@ -800,12 +805,13 @@ NOTION_TO_OBSIDIAN_TYPE = {
 
 def obsidian_type_for(key: str, ptype: str) -> str:
     """
-    Map a Notion property (yamlified key + Notion type) to an Obsidian
-    property type. The "tags" key is special-cased to Obsidian's `tags`
-    type (which feeds the global #tag system) when the source is a
-    multi-select; otherwise it falls back to the type-table.
+    Map a Notion property (property-name key + Notion type) to an Obsidian
+    property type. A "tags" property (matched case-insensitively, e.g. Notion's
+    "Tags") is special-cased to Obsidian's `tags` type (which feeds the global
+    #tag system) when the source is a multi-select; otherwise it falls back to
+    the type-table.
     """
-    if key == "tags" and ptype == "multi_select":
+    if key.strip().lower() == "tags" and ptype == "multi_select":
         return "tags"
     return NOTION_TO_OBSIDIAN_TYPE.get(ptype, "text")
 
@@ -1122,10 +1128,11 @@ def write_entry(
         value = convert_property_value(dominant_type, td)
         if value is None:
             continue
-        # Special case: when a property maps to YAML 'tags', Obsidian treats
-        # those values as actual tags. Tag syntax disallows spaces, parens,
-        # etc., so sanitize each value (e.g., "test plan" -> "test-plan").
-        if info["key"] == "tags":
+        # Special case: a "tags" property (matched case-insensitively, e.g.
+        # Notion's "Tags") feeds Obsidian's tag system, which treats the values
+        # as actual tags. Tag syntax disallows spaces, parens, etc., so
+        # sanitize each value (e.g., "test plan" -> "test-plan").
+        if info["key"].strip().lower() == "tags":
             if isinstance(value, list):
                 value = [t for t in (sanitize_obsidian_tag(v) for v in value) if t]
                 if not value:
