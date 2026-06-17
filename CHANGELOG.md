@@ -4,6 +4,14 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-16 — revive Notion to-do items as Obsidian task lists
+
+Decision: convert Notion to-do items (`<li>` with `<div class="checkbox checkbox-on|off">`) into Markdown task syntax (`_convert_checkboxes`, pre-pass) — `- [x] text` (checked) / `- [ ] text` (unchecked). Adjacent to-do lists merge into one tight task list.
+Why: markdownify dropped the checkbox and rendered a plain bullet, losing the checked/unchecked state.
+Tests: `Notion Database to Obsidian/test_checkboxes.py` (TDD, 4 cases). Verified on a real export (13 task items in a sample entry).
+
+---
+
 ## 2026-06-16 — revive Notion toggles as Obsidian foldable callouts
 
 Decision: convert Notion toggles (`<details>`, exported wrapped in `<ul class="toggle">`) into Obsidian foldable callouts (`_convert_toggles`, pre-pass) — `> [!note]- Title` collapsed, `> [!note]+ Title` when the source `<details open>`. The `<ul class="toggle"><li>` wrapper is dropped when it holds only the toggle, so no stray bullet remains.

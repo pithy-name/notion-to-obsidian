@@ -565,6 +565,29 @@ def _convert_toggles(body_tag: Tag) -> None:
             details.replace_with(bq)
 
 
+def _convert_checkboxes(body_tag: Tag) -> None:
+    """
+    Convert Notion to-do items into Obsidian task-list items.
+
+    Notion exports a to-do as
+        <ul class="to-do-list"><li><div class="checkbox checkbox-on|off"></div>
+            <span class="to-do-children-…">text</span></li></ul>
+    markdownify drops the checkbox and renders a plain bullet. Replace the
+    checkbox marker with Markdown task syntax so the item becomes `- [x] text`
+    (checked) or `- [ ] text` (unchecked). Adjacent to-do lists are then merged
+    into one tight task list by _merge_adjacent_lists.
+    """
+    for li in body_tag.find_all("li"):
+        # Only this item's own checkbox (direct child) — nested to-dos are their
+        # own <li>s and get handled on their own iteration.
+        cb = li.find("div", class_=lambda c: c and "checkbox" in c, recursive=False)
+        if cb is None:
+            continue
+        checked = any("checkbox-on" in c for c in (cb.get("class") or []))
+        cb.decompose()
+        li.insert(0, NavigableString("[x] " if checked else "[ ] "))
+
+
 _LIST_TAGS = ("ul", "ol")
 
 
@@ -653,6 +676,9 @@ def convert_body(
 
     # Notion toggles (<details>) → Obsidian foldable callouts `> [!note]-`.
     _convert_toggles(body_tag)
+
+    # Notion to-do items → Obsidian task list items `- [ ]` / `- [x]`.
+    _convert_checkboxes(body_tag)
 
     # Notion emits one <ul>/<ol> per bullet/number; merge adjacent same-kind
     # lists so markdownify renders tight lists, not blank-line-separated ones.
