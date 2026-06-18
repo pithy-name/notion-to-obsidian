@@ -1013,14 +1013,20 @@ def emit_base_file(
     out_path: Path,
     schema: "OrderedDict[str, Dict[str, Any]]",
     *,
+    folder_filter: Optional[str] = None,
     force: bool,
     overwrite_log: List[str],
     dry_run: bool = False,
 ) -> None:
     """
     Write a starter .base file: table view with one column per discovered
-    property. Covers all .md files in the vault (no folder scope).
-    Disposable — user can replace via Obsidian's UI (right-click → "New base").
+    property. Disposable — user can replace via Obsidian's UI
+    (right-click → "New base").
+
+    `folder_filter` (a vault-relative folder path, forward-slashed) scopes the
+    base to files DIRECTLY in that folder via `file.folder == "<path>"`
+    (non-recursive) — used for the per-database bases. When None, the base
+    covers all `.md` files in the vault (the vault-wide base).
 
     Honors the safe-write contract: an existing `.base` file is preserved by
     default (new content lands in `<name>.base.new`); `force=True` overwrites.
@@ -1028,11 +1034,11 @@ def emit_base_file(
     order = ["file.name"] + [info["key"] for info in schema.values()]
     base_doc = OrderedDict()
     # Filter: .md only — excludes attachments (PDFs etc.) in entry subfolders.
-    base_doc["filters"] = OrderedDict([
-        ("and", [
-            'file.ext == "md"',
-        ])
-    ])
+    # A per-database base additionally scopes to its own folder (non-recursive).
+    filters = ['file.ext == "md"']
+    if folder_filter is not None:
+        filters.append(f'file.folder == "{folder_filter}"')
+    base_doc["filters"] = OrderedDict([("and", filters)])
     base_doc["views"] = [
         OrderedDict([
             ("type", "table"),
@@ -1184,18 +1190,6 @@ def emit_types_json(
 # ---- Main pipeline ---------------------------------------------------------
 
 
-def build_wikilink_map(entries: List[Dict[str, Any]]) -> Dict[str, str]:
-    """
-    Build {decoded relative href → Obsidian title} so links between entries
-    in the same export resolve to [[wikilinks]] in the output.
-    """
-    m: Dict[str, str] = {}
-    for entry in entries:
-        rel = entry["path"].name  # e.g., "Title abc123…html"
-        m[unquote(rel)] = entry["title"]
-    return m
-
-
 def write_entry(
     entry: Dict[str, Any],
     out_dir: Path,
@@ -1203,6 +1197,9 @@ def write_entry(
     wikilink_map: Dict[str, str],
     used_filenames: Dict[str, int],
     *,
+    out_name: Optional[str] = None,
+    backlink_to: Optional[str] = None,
+    owned_dbs: Optional[List[Dict[str, Any]]] = None,
     extra_tables: Optional[List[str]] = None,
     nested_db_folder_hexes: Optional[Set[str]] = None,
     force: bool,
@@ -1234,20 +1231,24 @@ def write_entry(
     """
     warnings: List[str] = []
 
-    # Choose the output filename. Disambiguate collisions by appending the
-    # short Notion ID (last 6 hex chars) if needed.
-    base_name = sanitize_filename(entry["title"])
-    candidate = base_name
-    if base_name in used_filenames:
-        used_filenames[base_name] += 1
-        suffix = (extract_notion_id(entry["path"].name) or "")[-6:]
-        if suffix:
-            candidate = f"{base_name} ({suffix})"
-        else:
-            candidate = f"{base_name} ({used_filenames[base_name]})"
-        warnings.append(f"Filename collision on {base_name!r}, wrote as {candidate!r}")
+    # Output filename. Normally the caller pre-assigns a vault-unique `out_name`
+    # (so name-based wikilinks resolve unambiguously). Without it, fall back to
+    # per-folder collision disambiguation (append the short Notion ID).
+    if out_name is not None:
+        candidate = out_name
     else:
-        used_filenames[base_name] = 1
+        base_name = sanitize_filename(entry["title"])
+        candidate = base_name
+        if base_name in used_filenames:
+            used_filenames[base_name] += 1
+            suffix = (extract_notion_id(entry["path"].name) or "")[-6:]
+            if suffix:
+                candidate = f"{base_name} ({suffix})"
+            else:
+                candidate = f"{base_name} ({used_filenames[base_name]})"
+            warnings.append(f"Filename collision on {base_name!r}, wrote as {candidate!r}")
+        else:
+            used_filenames[base_name] = 1
 
     md_path = out_dir / f"{candidate}.md"
 
@@ -1419,8 +1420,17 @@ def write_entry(
     if contents and not contents.endswith("\n"):
         contents += "\n"
     contents += "\n# " + entry["title"] + "\n"
+    if backlink_to:
+        contents += "\n↑ Part of [[" + backlink_to + "]]\n"
     if body_md:
         contents += "\n" + body_md + "\n"
+    # If this note is the "home" of one or more child databases, embed each
+    # child's .base and list its entries as wikilinks (drives the graph).
+    for od in (owned_dbs or []):
+        contents += "\n## " + od["name"] + "\n"
+        contents += "\n![[" + od["base_name"] + ".base]]\n"
+        if od.get("children"):
+            contents += "\n" + "\n".join(f"- [[{c}]]" for c in od["children"]) + "\n"
 
     actual_path = safe_write_text(
         md_path, contents,
@@ -1520,83 +1530,23 @@ def discover_tree(src: Path) -> Dict[str, Any]:
     return {"databases": databases, "pages": pages}
 
 
-def process_database(
-    entries_folder: Path,
-    entry_paths: List[Path],
-    db_out_dir: Path,
-    db_name: str,
-    *,
-    wikilink_map: Optional[Dict[str, str]] = None,
-    nested_folder_hexes_by_uuid: Optional[Dict[str, Set[str]]] = None,
-    force: bool,
-    overwrite_log: List[str],
-    attachment_mode: str = "copy",
-    dry_run: bool = False,
-) -> Tuple[int, List[str], "OrderedDict[str, Dict[str, Any]]"]:
+def assign_unique_names(nodes: List[Dict[str, Any]]) -> None:
     """
-    Process one database: parse all entries and write a .md note for each into
-    `db_out_dir` — a folder that mirrors the database's location in the source
-    export (the caller strips the Notion hex id from each path component).
-    Attachments are materialized per `attachment_mode`.
-
-    `wikilink_map` is the vault-wide {decoded-href → title} map so links between
-    notes resolve regardless of which database they live in; if None, a per-DB
-    map is built as a fallback.
-
-    `nested_folder_hexes_by_uuid` maps an owner entry's notion_uuid → the set of
-    hex IDs of the child databases it owns, so write_entry can strip the inline
-    collection-snapshot table Notion embeds in the owner's body (each child DB
-    is rendered as its own notes instead of an inline table).
-
-    Returns (num_entries_written, warnings, schema). The schema is returned so
-    the caller can aggregate across databases for vault-wide artifacts like
-    `.obsidian/types.json` and the vault-wide `.base`.
+    Give every node a vault-unique `name` (the .md filename stem) so name-based
+    wikilinks resolve unambiguously. Nodes are processed in the given order: the
+    first claimant of a sanitized title keeps it; later collisions get the short
+    Notion id appended (or a counter when there is no id).
     """
-    # Parse entries
-    parsed_entries: List[Dict[str, Any]] = []
-    for path in entry_paths:
-        parsed = parse_entry(path)
-        if parsed is None:
-            continue
-        parsed_entries.append(parsed)
-    if not parsed_entries:
-        return 0, [f"No parseable entries found in {entries_folder}"], OrderedDict()
-
-    # Schema
-    schema = discover_schema(parsed_entries)
-    drift = warn_schema_drift(schema)
-
-    if not dry_run:
-        db_out_dir.mkdir(parents=True, exist_ok=True)
-
-    # Wikilinks: prefer the vault-wide map; fall back to per-DB.
-    if wikilink_map is None:
-        wikilink_map = build_wikilink_map(parsed_entries)
-
-    # Write each entry
-    used_filenames: Dict[str, int] = {}
-    warnings: List[str] = []
-    _hexes = nested_folder_hexes_by_uuid or {}
-    for entry in parsed_entries:
-        folder_hexes = _hexes.get(entry["notion_uuid"]) or None
-        _md_path, warns = write_entry(
-            entry,
-            db_out_dir,
-            schema,
-            wikilink_map,
-            used_filenames,
-            nested_db_folder_hexes=folder_hexes,
-            force=force,
-            overwrite_log=overwrite_log,
-            attachment_mode=attachment_mode,
-            dry_run=dry_run,
-        )
-        warnings.extend(warns)
-
-    print(f"  → {db_name}: {len(parsed_entries)} entries written to {db_out_dir}")
-    for w in drift:
-        print(f"    drift {w.strip()}")
-    return len(parsed_entries), warnings, schema
+    seen: Dict[str, int] = {}
+    for node in nodes:
+        base = sanitize_filename(node["parsed"]["title"])
+        if base not in seen:
+            seen[base] = 1
+            node["name"] = base
+        else:
+            seen[base] += 1
+            sid = (extract_notion_id(node["parsed"]["path"].name) or "")[-6:]
+            node["name"] = f"{base} ({sid})" if sid else f"{base} ({seen[base]})"
 
 
 def mirror_output_dir(src_folder: Path, src_root: Path, out_root: Path) -> Path:
@@ -1623,14 +1573,19 @@ def run_conversion(
 ) -> Dict[str, Any]:
     """
     Convert a Notion HTML export at `src` into a mirrored Obsidian vault at
-    `out_root`. Every node — a database entry at ANY depth or a standalone
-    page — becomes a real .md note whose output path mirrors its location in
-    the source export (hex id stripped from each path component). There is no
-    nesting-depth ceiling and no requirement that a database exist (a
-    pages-only export is valid).
+    `out_root`. Every node — a database entry at ANY depth, a standalone page, or
+    a database index/landing page — becomes a real .md note whose output path
+    mirrors its source location (hex id stripped). No nesting-depth ceiling and
+    no requirement that a database exist.
 
-    Returns a summary dict (counts + paths) used for the conversion report and
-    by callers/tests.
+    Piece 3 wiring: every note gets a vault-unique filename; each database gets a
+    same-level-scoped `.base` (alongside the vault-wide one); a database's "home"
+    note embeds that base and lists `[[entry]]` links, and each entry carries an
+    `↑ Part of [[home]]` backlink. The home is the owning entry/page for a nested
+    database, or the index/landing page for a top-level database.
+
+    Returns a summary dict (counts + paths) used for the conversion report and by
+    callers/tests.
     """
     src = Path(src).expanduser().resolve()
     out_root = Path(out_root).expanduser().resolve()
@@ -1650,7 +1605,6 @@ def run_conversion(
         f"{len(databases)} database(s) at any depth; "
         f"{len(pages)} standalone page(s)."
     )
-
     if db_name and len(databases) > 1:
         print(
             f"WARNING: --db-name was given but {len(databases)} databases were "
@@ -1658,87 +1612,133 @@ def run_conversion(
         )
         db_name = None
 
-    # Parse every node once so wikilinks resolve vault-wide (name-based links
-    # across databases). A standalone page parses as an entry with no
-    # properties, so the same writer handles both.
-    all_parsed: List[Dict[str, Any]] = []
+    # Parse entries, build per-database schema, and resolve the mirrored folder.
     for db in databases:
         db["_parsed"] = [e for p in db["entry_paths"] if (e := parse_entry(p)) is not None]
-        all_parsed.extend(db["_parsed"])
-    parsed_pages: List[Tuple[Dict[str, Any], Path]] = []
+        db["schema"] = discover_schema(db["_parsed"])
+        db["out_dir"] = mirror_output_dir(db["entries_folder"], src, out_root)
+        db["base_name"] = db["out_dir"].name
+
+    # Node registry: every entry, index/landing page, and standalone page → a note.
+    nodes: List[Dict[str, Any]] = []
+    for db in databases:
+        for parsed in db["_parsed"]:
+            nodes.append({"parsed": parsed, "out_dir": db["out_dir"], "kind": "entry", "db": db})
+    for db in databases:
+        if db["index_path"] is not None:
+            parsed = parse_entry(db["index_path"])
+            if parsed is not None:
+                nodes.append({
+                    "parsed": parsed,
+                    "out_dir": mirror_output_dir(db["index_path"].parent, src, out_root),
+                    "kind": "index", "db": db,
+                })
     for pg in pages:
         parsed = parse_entry(pg["path"])
         if parsed is None:
             continue
-        parsed_pages.append((parsed, mirror_output_dir(pg["path"].parent, src, out_root)))
-        all_parsed.append(parsed)
-    wikilink_map = build_wikilink_map(all_parsed)
+        nodes.append({
+            "parsed": parsed,
+            "out_dir": mirror_output_dir(pg["path"].parent, src, out_root),
+            "kind": "page", "db": None,
+        })
 
-    # Map an owner node's notion_uuid → the hex IDs of the child databases it
-    # owns, so the owner's inline collection-snapshot table for each child DB is
-    # stripped from its body (the child DB becomes its own notes instead).
+    # Stable order → deterministic vault-unique filenames.
+    nodes.sort(key=lambda nd: str(nd["parsed"]["path"]))
+    assign_unique_names(nodes)
+    for nd in nodes:
+        nd["backlink_to"] = None
+        nd["owned_dbs"] = []
+
+    # Name-based wikilink map: decoded source href filename → unique note name.
+    wikilink_map = {unquote(nd["parsed"]["path"].name): nd["name"] for nd in nodes}
+    # Resolve an owning node by the hex id in its source filename.
+    node_by_hex: Dict[str, Dict[str, Any]] = {}
+    for nd in nodes:
+        h = extract_notion_id(nd["parsed"]["path"].name)
+        if h:
+            node_by_hex[h] = nd
+    index_by_db: Dict[int, Dict[str, Any]] = {
+        id(nd["db"]): nd for nd in nodes if nd["kind"] == "index"
+    }
+
+    # Strip the inline collection-snapshot table Notion embeds in an owner's body
+    # (the child DB is rendered as its own notes / embedded base instead).
     nested_hexes_by_owner_uuid: Dict[str, Set[str]] = defaultdict(set)
     for db in databases:
         if db["owner_hex"] and db["hex"]:
             nested_hexes_by_owner_uuid[hex_to_uuid(db["owner_hex"])].add(db["hex"])
 
-    total_entries = 0
     total_warnings: List[str] = []
     overwrite_log: List[str] = []
-    # Aggregate schema across all databases so a single vault-wide types.json
-    # and .base capture every property the user might Bases-filter on.
-    aggregate_schema: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    single_db = len(databases) == 1
-    for db in databases:
-        disp = db_name if (db_name and single_db) else db["name"]
-        n, warns, db_schema = process_database(
-            db["entries_folder"],
-            db["entry_paths"],
-            mirror_output_dir(db["entries_folder"], src, out_root),
-            disp,
-            wikilink_map=wikilink_map,
-            nested_folder_hexes_by_uuid=nested_hexes_by_owner_uuid,
-            force=force,
-            overwrite_log=overwrite_log,
-            attachment_mode=attachment_mode,
-            dry_run=dry_run,
-        )
-        total_entries += n
-        total_warnings.extend(warns)
-        for pname, info in db_schema.items():
-            if pname in aggregate_schema:
-                aggregate_schema[pname]["types"].update(info["types"])
-            else:
-                aggregate_schema[pname] = {
-                    "types": Counter(info["types"]),
-                    "key": info["key"],
-                }
 
-    # Standalone pages → notes (no schema; body conversion + snapshot stripping).
+    # Assign each database a "home" note that embeds its base + lists its entries;
+    # give every entry an `↑ Part of [[home]]` backlink.
+    for db in databases:
+        entry_nodes = [nd for nd in nodes if nd["kind"] == "entry" and nd["db"] is db]
+        child_names = [nd["name"] for nd in entry_nodes]
+        home = node_by_hex.get(db["owner_hex"]) if db["owner_hex"] else index_by_db.get(id(db))
+        if home is None:
+            total_warnings.append(
+                f"database {db['name']!r}: no home note found; its .base is written "
+                "but not embedded (a top-level database needs an index page)."
+            )
+            continue
+        home["owned_dbs"].append({
+            "name": db["name"], "base_name": db["base_name"], "children": child_names,
+        })
+        for en in entry_nodes:
+            en["backlink_to"] = home["name"]
+
+    # Write every node.
+    entries_written = 0
     pages_written = 0
-    for parsed, page_out_dir in parsed_pages:
+    for nd in nodes:
+        parsed = nd["parsed"]
+        db = nd["db"]
+        schema = db["schema"] if nd["kind"] == "entry" else OrderedDict()
         if not dry_run:
-            page_out_dir.mkdir(parents=True, exist_ok=True)
+            nd["out_dir"].mkdir(parents=True, exist_ok=True)
         folder_hexes = nested_hexes_by_owner_uuid.get(parsed["notion_uuid"]) or None
         _p, warns = write_entry(
-            parsed,
-            page_out_dir,
-            OrderedDict(),
-            wikilink_map,
-            {},
+            parsed, nd["out_dir"], schema, wikilink_map, {},
+            out_name=nd["name"], backlink_to=nd["backlink_to"], owned_dbs=nd["owned_dbs"],
             nested_db_folder_hexes=folder_hexes,
-            force=force,
-            overwrite_log=overwrite_log,
-            attachment_mode=attachment_mode,
-            dry_run=dry_run,
+            force=force, overwrite_log=overwrite_log,
+            attachment_mode=attachment_mode, dry_run=dry_run,
         )
         total_warnings.extend(warns)
-        pages_written += 1
+        if nd["kind"] == "entry":
+            entries_written += 1
+        elif nd["kind"] == "page":
+            pages_written += 1
+
+    for db in databases:
+        print(f"  → {db['name']}: {len(db['_parsed'])} entries → {db['out_dir']}")
+        for w in warn_schema_drift(db["schema"]):
+            print(f"    drift {w.strip()}")
     if pages:
         print(f"  → {pages_written} standalone page(s) written as notes")
 
-    # Single vault-wide .base covering all entries across all databases.
+    # Aggregate schema across all databases for the vault-wide artifacts.
+    aggregate_schema: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+    for db in databases:
+        for pname, info in db["schema"].items():
+            if pname in aggregate_schema:
+                aggregate_schema[pname]["types"].update(info["types"])
+            else:
+                aggregate_schema[pname] = {"types": Counter(info["types"]), "key": info["key"]}
+
+    # Per-database same-level-scoped .base files + the vault-wide base.
     if not no_base:
+        for db in databases:
+            folder_filter = db["out_dir"].relative_to(out_root).as_posix()
+            emit_base_file(
+                db["out_dir"] / f"{db['base_name']}.base",
+                db["schema"],
+                folder_filter=folder_filter,
+                force=force, overwrite_log=overwrite_log, dry_run=dry_run,
+            )
         vault_base_name = strip_notion_id(src.name).strip() or src.name
         emit_base_file(
             out_root / f"{vault_base_name}.base",
@@ -1746,7 +1746,6 @@ def run_conversion(
             force=force, overwrite_log=overwrite_log, dry_run=dry_run,
         )
 
-    # Emit/merge .obsidian/types.json so Bases types each property correctly.
     if not no_types:
         emit_types_json(
             out_root, aggregate_schema,
@@ -1758,7 +1757,7 @@ def run_conversion(
         "out_root": out_root,
         "databases": databases,
         "pages": pages,
-        "total_entries": total_entries,
+        "total_entries": entries_written,
         "pages_written": pages_written,
         "attachment_mode": attachment_mode,
         "dry_run": dry_run,

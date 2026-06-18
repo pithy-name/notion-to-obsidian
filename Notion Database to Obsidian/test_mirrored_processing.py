@@ -79,9 +79,10 @@ class MirroredProcessing(unittest.TestCase):
         self.assertIn("Meow", text)
 
     def test_total_note_count(self):
-        # 8 DB entries + 2 standalone pages = 10 notes. Exclude .base/report.
+        # 8 DB entries + 2 standalone pages + 4 DB index/landing pages = 14 notes.
+        # (Index pages became real notes in Piece 3 / audit item 68.) Exclude .base/report.
         notes = [p for p in self.out.rglob("*.md") if not p.name.startswith("_")]
-        self.assertEqual(len(notes), 10, sorted(str(p.relative_to(self.out)) for p in notes))
+        self.assertEqual(len(notes), 14, sorted(str(p.relative_to(self.out)) for p in notes))
 
 
 if __name__ == "__main__":

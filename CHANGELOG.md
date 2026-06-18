@@ -4,6 +4,19 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-18 — arbitrary-depth nesting, Piece 3: per-level bases, home notes, links & backlinks
+
+Decision: complete the nested-directory feature's linking/graph layer.
+- **Vault-unique filenames:** every note's filename is now unique across the whole vault (not just within a folder), so name-based `[[wikilinks]]` resolve unambiguously. Names are assigned deterministically (sorted by source path); a collision gets the short Notion id suffix.
+- **Per-database `.base`:** each database now gets its own same-level-scoped `.base` (`file.folder == "<mirrored path>"`) at its folder, ALONGSIDE the vault-wide base at the output root.
+- **Database "home" notes:** each database has one home note that embeds its `.base` (`![[Name.base]]`) and lists its entries as `[[links]]`; each entry carries an `↑ Part of [[home]]` backlink. The home is the owning entry/page for a nested database, or the index/landing page for a top-level database — which also means DB index/landing pages are now written as notes (audit item 68).
+- **Refactor:** `run_conversion` builds a node registry (entries + index pages + standalone pages), assigns unique names, wires homes/links/backlinks, then writes. Removed the now-superseded `process_database` and `build_wikilink_map`.
+Context: spec acceptance criteria 5/6/7 (`docs/superpowers/specs/2026-06-17-nested-directory-support-design.md`).
+Alternatives: path-qualified wikilinks (rejected — brittle on move; name-based + unique filenames is move-proof); a static child summary table instead of a base embed (rejected — embedding is documented Obsidian behavior and drives the graph). Trade-offs: a top-level database with no index page has no home (its base is written but not embedded; warned). `.base`/embeds need Obsidian 1.9+; the `.md` notes and `[[links]]` work without it. One `.base` per nested DB (proliferation — acceptable, documented).
+Tests: `Notion Database to Obsidian/test_piece3.py` (9 cases). Full suite 93 green.
+
+---
+
 ## 2026-06-18 — toggle headings keep their heading level
 
 Decision: when a Notion toggle's `<summary>` contains a heading element, convert it to a real Markdown heading (preserving the level) instead of a foldable callout. Obsidian folds real headings natively, so this keeps both the level and the fold. Plain toggles (no heading in the summary) still become expanded `> [!note]+` callouts.
