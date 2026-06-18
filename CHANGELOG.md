@@ -4,6 +4,15 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-18 — toggle headings keep their heading level
+
+Decision: when a Notion toggle's `<summary>` contains a heading element, convert it to a real Markdown heading (preserving the level) instead of a foldable callout. Obsidian folds real headings natively, so this keeps both the level and the fold. Plain toggles (no heading in the summary) still become expanded `> [!note]+` callouts.
+Context: divergence-audit item 5. A toggle heading previously flattened to `> [!note]+`, losing the heading level.
+Caveat: no toggle-heading sample exists in the current test library, so this targets the plausible structure (a heading element inside `<summary>`). It is a safe no-op for toggles without a heading and should be re-confirmed against a real toggle-heading export.
+Tests: `Notion Database to Obsidian/test_toggles.py::test_toggle_heading_becomes_real_markdown_heading`.
+
+---
+
 ## 2026-06-18 — verified: body tables convert to GFM (audit item 21)
 
 Audit item 21 flagged body-table conversion as uncertain. Verified: an ordinary content `<table>` in a note body converts to a GFM Markdown table via markdownify. GFM has no `colspan`/`rowspan`, so merged cells are flattened (the value lands in the first column, the rest blank) — but no cell text is lost. No code change — added regression tests.

@@ -609,25 +609,39 @@ def _convert_toggles(body_tag: Tag) -> None:
         if details.parent is None:
             continue
         summary = details.find("summary")
+        # A "toggle heading" exports with a heading element inside its <summary>.
+        # Obsidian folds real headings natively, so emit a genuine Markdown
+        # heading (preserving the level) instead of a callout that would flatten
+        # the level. A plain toggle (no heading) becomes an expanded foldable
+        # callout as before.
+        heading = summary.find(["h1", "h2", "h3", "h4", "h5", "h6"]) if summary else None
         title = (summary.get_text(strip=True) if summary else "") or "Toggle"
         if summary is not None:
             summary.extract()
-        bq = _TAG_FACTORY.new_tag("blockquote")
-        title_p = _TAG_FACTORY.new_tag("p")
-        title_p.string = f"[!note]+ {title}".rstrip()
-        bq.append(title_p)
-        for child in list(details.contents):
-            bq.append(child.extract())
+
+        if heading is not None:
+            node = _TAG_FACTORY.new_tag(heading.name)
+            node.string = title
+            replacement = [node]
+            replacement.extend(child.extract() for child in list(details.contents))
+        else:
+            bq = _TAG_FACTORY.new_tag("blockquote")
+            title_p = _TAG_FACTORY.new_tag("p")
+            title_p.string = f"[!note]+ {title}".rstrip()
+            bq.append(title_p)
+            for child in list(details.contents):
+                bq.append(child.extract())
+            replacement = [bq]
 
         # Drop the `<ul class="toggle"><li>` wrapper when it holds only this
-        # toggle, so we don't emit a stray bullet around the callout.
+        # toggle, so we don't emit a stray bullet around the result.
         li = details.parent if details.parent.name == "li" else None
         ul = li.parent if li and li.parent and li.parent.name == "ul" \
             and any("toggle" in c for c in (li.parent.get("class") or [])) else None
         if ul is not None and len(ul.find_all("li", recursive=False)) == 1:
-            ul.replace_with(bq)
+            ul.replace_with(*replacement)
         else:
-            details.replace_with(bq)
+            details.replace_with(*replacement)
 
 
 def _convert_checkboxes(body_tag: Tag) -> None:
