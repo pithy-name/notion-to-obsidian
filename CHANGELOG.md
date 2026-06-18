@@ -4,6 +4,14 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-18 — verified: body tables convert to GFM (audit item 21)
+
+Audit item 21 flagged body-table conversion as uncertain. Verified: an ordinary content `<table>` in a note body converts to a GFM Markdown table via markdownify. GFM has no `colspan`/`rowspan`, so merged cells are flattened (the value lands in the first column, the rest blank) — but no cell text is lost. No code change — added regression tests.
+Limitation: merged-cell *layout* is not preserved (a GFM constraint, not a data loss).
+Tests: `Notion Database to Obsidian/test_tables.py`.
+
+---
+
 ## 2026-06-18 — verified: nested to-do conversion is faithful (audit item 8)
 
 Audit item 8 questioned whether the `to-do-children` wrapper span around to-do text leaves artifacts. Verified it does not: a nested to-do converts to indented `- [x]` / `- [ ]` task items with the span dropped cleanly (markdownify treats the inline span transparently). No code change — added a regression test that locks the nested-to-do output and asserts no `to-do-children` leakage.
