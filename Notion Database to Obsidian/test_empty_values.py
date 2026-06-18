@@ -70,5 +70,48 @@ class EmptyToggleSummary(unittest.TestCase):
         self.assertIn("Toggle", md)                     # non-empty fallback title
 
 
+class EmptyProperties(unittest.TestCase):
+    """Item 64: a property empty for this entry still appears in YAML (as null),
+    so every note shows the database's full property set (Notion shows the
+    column for every row)."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._td.name)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _td_tag(self, html):
+        return BeautifulSoup(f"<td>{html}</td>", "html.parser").find("td")
+
+    def _write(self):
+        from collections import Counter, OrderedDict
+        src = self.tmp / "src"; src.mkdir()
+        out = self.tmp / "out"; out.mkdir()
+        entry = {
+            "path": src / "Item aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.html",
+            "title": "Item",
+            "notion_uuid": None,
+            "properties": [("Name", "text", self._td_tag("hello"))],
+            "body": None,
+        }
+        schema = OrderedDict()
+        schema["Name"] = {"types": Counter({"text": 1}), "key": "Name"}
+        schema["Extra"] = {"types": Counter({"text": 1}), "key": "Extra"}
+        n.write_entry(
+            entry, out, schema, {}, {},
+            force=True, overwrite_log=[], attachment_mode="inplace", dry_run=False,
+        )
+        return (out / "Item.md").read_text(encoding="utf-8")
+
+    def test_present_property_keeps_value(self):
+        self.assertRegex(self._write(), r"(?m)^Name:\s*hello\s*$")
+
+    def test_missing_property_emitted_as_null(self):
+        text = self._write()
+        self.assertRegex(text, r"(?m)^Extra:\s*(null)?\s*$")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

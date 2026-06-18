@@ -1305,7 +1305,12 @@ def write_entry(
     # Build a quick lookup for this entry's properties.
     entry_props: Dict[str, Tuple[str, Tag]] = {p[0]: (p[1], p[2]) for p in entry["properties"]}
     for pname, info in schema.items():
+        key = info["key"]
+        # A property that is empty for THIS entry still appears in the YAML, as
+        # null — so every note carries the database's full property set (Notion
+        # shows the column for every row, and Bases stays consistent).
         if pname not in entry_props:
+            frontmatter[key] = None
             continue
         ptype, td = entry_props[pname]
         # Use the dominant type from the schema for conversion (handles drift).
@@ -1317,22 +1322,25 @@ def write_entry(
             )
         value = convert_property_value(dominant_type, td)
         if value is None:
+            frontmatter[key] = None
             continue
         # Special case: a "tags" property (matched case-insensitively, e.g.
         # Notion's "Tags") feeds Obsidian's tag system, which treats the values
         # as actual tags. Tag syntax disallows spaces, parens, etc., so
         # sanitize each value (e.g., "test plan" -> "test-plan").
-        if info["key"].lower() == "tags":
+        if key.lower() == "tags":
             if isinstance(value, list):
                 value = [t for t in (sanitize_obsidian_tag(v) for v in value) if t]
                 if not value:
+                    frontmatter[key] = None
                     continue
             elif isinstance(value, str):
                 sv = sanitize_obsidian_tag(value)
                 if not sv:
+                    frontmatter[key] = None
                     continue
                 value = [sv]
-        frontmatter[info["key"]] = value
+        frontmatter[key] = value
 
     # Strip inline snapshot tables Notion embeds for nested databases.
     if nested_db_folder_hexes and entry.get("body"):

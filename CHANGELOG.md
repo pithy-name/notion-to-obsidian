@@ -4,6 +4,15 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-18 — include empty properties as null
+
+Decision: every property in a database's schema now appears in each note's YAML; a property that is empty for a given entry is emitted as `null` (previously the key was omitted entirely). The same applies to a property whose value converts to nothing (e.g. an emptied tags list).
+Context: divergence-audit item 64. Notion shows the column for every row, so omitting empty properties made the property panel inconsistent across notes and could hide a property from Bases on notes where it happens to be blank.
+Alternatives: emit empty as `""` (rejected — `null` is the natural "no value" and reads better in Bases); keep omitting (rejected — the flagged divergence). Trade-off: noisier frontmatter (a `null` line per unset property).
+Tests: `Notion Database to Obsidian/test_empty_values.py` (`EmptyProperties`).
+
+---
+
 ## 2026-06-18 — show the page title as a body heading
 
 Decision: write the Notion page title as an `# H1` at the top of each note's body (in `write_entry`, after the YAML frontmatter). Notion renders the page title at the top of the page; Obsidian shows only the filename, so without this the title was absent from the note's content, previews, exported Markdown, and transclusions/embeds.
