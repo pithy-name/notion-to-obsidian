@@ -4,6 +4,13 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-18 — verified: nested to-do conversion is faithful (audit item 8)
+
+Audit item 8 questioned whether the `to-do-children` wrapper span around to-do text leaves artifacts. Verified it does not: a nested to-do converts to indented `- [x]` / `- [ ]` task items with the span dropped cleanly (markdownify treats the inline span transparently). No code change — added a regression test that locks the nested-to-do output and asserts no `to-do-children` leakage.
+Tests: `Notion Database to Obsidian/test_checkboxes.py::test_nested_todo_indents_under_parent`.
+
+---
+
 ## 2026-06-18 — keep embedded URLs (iframes)
 
 Decision: convert Notion embed blocks (`<iframe>` — YouTube, Maps, Figma, etc., sometimes wrapped in a `<figure>`) into a plain link to the embedded URL (`_convert_iframes`, pre-pass). markdownify drops `<iframe>` entirely, so the URL was lost; an iframe with no `src` is removed.

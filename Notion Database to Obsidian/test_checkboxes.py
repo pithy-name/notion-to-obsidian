@@ -58,6 +58,23 @@ class Checkboxes(unittest.TestCase):
         self.assertNotIn("[ ]", md)
         self.assertNotIn("[x]", md)
 
+    def test_nested_todo_indents_under_parent(self):
+        # Audit item 8: a to-do with a nested child to-do must keep both states
+        # and indent the child — the `to-do-children` span must leave no artifact.
+        html = (
+            '<ul class="to-do-list"><li>'
+            '<div class="checkbox checkbox-on"></div>'
+            '<span class="to-do-children-checked">Parent task</span>'
+            '<ul class="to-do-list"><li>'
+            '<div class="checkbox checkbox-off"></div>'
+            '<span class="to-do-children-unchecked">Child task</span>'
+            '</li></ul></li></ul>'
+        )
+        md = conv(html)
+        self.assertIn("- [x] Parent task", md)
+        self.assertIn("  - [ ] Child task", md)
+        self.assertNotIn("to-do-children", md)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
