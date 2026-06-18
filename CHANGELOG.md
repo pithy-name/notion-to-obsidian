@@ -4,6 +4,34 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-18 — bookmarks: never drop the URL
+
+Decision: a Notion link bookmark (`<figure><a class="bookmark source">`) now always keeps its URL. Two parts: (1) when the bookmark title is present-but-EMPTY (Notion fetched no page title), fall back to the visible URL → raw href → "Link", instead of emitting an empty link that markdownify dropped — which silently produced a note with no body; (2) for a titled bookmark, also emit the URL as a visible autolink subtitle (`<url>`), matching the HTML bookmark card which shows the URL in addition to the title.
+Context: found while testing a real export — a title-less bookmark's URL vanished entirely (7 of 253 entries affected). The HTML render is the fidelity benchmark; the card shows title + description + URL, so hiding the URL behind the title link was a regression.
+Alternatives: default the link text to the URL (rejected — a fetched title is more readable; would regress ~246 titled bookmarks to raw-URL text). Trade-offs: the favicon/preview image is still dropped (decorative); the URL subtitle adds one line per titled bookmark.
+Tests: `Notion Database to Obsidian/test_bookmark_figures.py` (TDD, 6 cases).
+
+---
+
+## 2026-06-18 — present-but-empty hardening (page title, toggle summary)
+
+Decision: elements that EXIST but are empty now fall back instead of yielding an empty string (`X.get_text() if X else fallback` treated an empty `X` as truthy). (1) An empty `<h1 class="page-title">` falls back to the filename with the Notion id stripped (e.g. `Untitled`), never `""` — an empty title produced broken `[[]]` wikilinks; this also improves the title-absent case (was using the raw filename including the hex id). (2) An empty toggle `<summary>` falls back to `Toggle`.
+Context: surfaced by an audit prompted by the bookmark bug ("are there other present-vs-empty checks?"). One real untitled empty page in the test library hit the title case.
+Alternatives: none meaningful — these are guard fixes. Trade-offs: none; toggle content was never lost (cosmetic title only). Benign present-but-empty cases left as-is (callout emoji → `[!note]` fallback; `.get(href,"")` guarded by `if not href`).
+Tests: `Notion Database to Obsidian/test_empty_values.py` (TDD, 3 cases).
+
+---
+
+## 2026-06-17 — arbitrary-depth nesting, Piece 2: recursive mirrored notes
+
+Decision: replace the depth-limited pipeline (`discover_databases` + inline-table nested DBs) with a recursive, mirrored one. `main()` is now a thin argparse wrapper around a new `run_conversion(src, out_root, ...)` orchestration function; `run_conversion` walks `discover_tree` and writes one real `.md` note per node — every database entry at ANY depth and every standalone page — into an output folder that mirrors its source location, with the Notion hex id stripped from each path component (`mirror_output_dir`). Database index/landing pages are discovered (and counted in the report) but not yet written — they become each database's home note in Piece 3. `process_database` now writes into a caller-supplied mirrored folder and takes the vault-wide wikilink map. A standalone page is just an entry with no properties, so the same writer handles both (no separate page code path). Removed the now-superseded `discover_databases`, `render_nested_db_as_markdown_table`, and `_body_to_cell`.
+Context: the old ceiling aborted on databases nested deeper than depth 2 and required a top-level database to exist; nested DBs were flattened into inline GFM tables instead of becoming real notes.
+Alternatives: (a) keep DB-name-only output folders (`out/<db>/`) — rejected: loses the nesting structure and can't host per-level `.base` scoping; (b) flatten everything to one folder with path-encoded names — rejected: not graph-friendly, ugly filenames. Chose mirrored layout so the entry-note and its children-folder sit side by side (Obsidian's note+folder pattern).
+Trade-offs: copy/symlink attachment modes would `copytree` an owner's source subfolder (which now also holds child-node HTML) and duplicate the subtree — so this piece is verified with `--inplace` (rewrites hrefs, copies nothing); copy/symlink child-vs-attachment separation is deferred to Piece 4 edge work. Per-level `.base`, parent↔child wikilinks/backlinks, and vault-unique filenames are Piece 3 (not yet wired). Because output filenames are de-duplicated per database (not yet vault-wide), two entries with the same title in different mirrored folders that resolve to the same output directory can collide — the safe-write contract writes the second to a `.md.new` sibling (and would overwrite under `--force`); vault-wide unique filenames land in Piece 3. Cosmetic, pre-existing (from `main`): the `types.json` "Updated …" log line lands in the same `overwrite_log` as file-preservation events, so the summary can mislabel an additive types.json merge as "PRESERVED 1 … .new siblings" when nothing was preserved — separate fix.
+Tests: `Notion Database to Obsidian/test_mirrored_processing.py` (TDD, 8 cases: note-per-node at every depth incl. beyond the old limit, standalone pages, page-owned DB, note+folder coexistence, body-`<table>` stays a Markdown table, total count). Full suite 65 green. CLI smoke-tested (`--dry-run` writes nothing; `--inplace` produces the 10-note mirrored tree + vault-wide `.base` + `types.json`).
+
+---
+
 ## 2026-06-17 — revive Notion highlights (background color → ==)
 
 Decision: wrap inline-content `block-color-*_background` elements in `==` so they become Obsidian highlights (`_convert_highlights`, pre-pass). markdownify has no highlight/`<mark>` support, but literal `==` survives. Block-container backgrounds are skipped (avoid `==` spanning blocks); callouts are excluded (converted earlier).
