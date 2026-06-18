@@ -4,6 +4,15 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-18 — keep embedded URLs (iframes)
+
+Decision: convert Notion embed blocks (`<iframe>` — YouTube, Maps, Figma, etc., sometimes wrapped in a `<figure>`) into a plain link to the embedded URL (`_convert_iframes`, pre-pass). markdownify drops `<iframe>` entirely, so the URL was lost; an iframe with no `src` is removed.
+Context: divergence-audit item 32. The HTML render shows the embed; Markdown has no interactive-iframe equivalent, but the destination URL must survive.
+Alternatives: try to reconstruct a provider-specific embed (rejected — out of scope, and Obsidian has no native embed for most providers). Trade-off: a live embed becomes a link, not an inline player. Latent in the current test library (0 iframes); built against the general `<iframe>` case with synthetic tests.
+Tests: `Notion Database to Obsidian/test_embeds.py` (3 cases).
+
+---
+
 ## 2026-06-18 — include empty properties as null
 
 Decision: every property in a database's schema now appears in each note's YAML; a property that is empty for a given entry is emitted as `null` (previously the key was omitted entirely). The same applies to a property whose value converts to nothing (e.g. an emptied tags list).

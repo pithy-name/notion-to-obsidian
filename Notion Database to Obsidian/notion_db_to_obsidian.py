@@ -746,6 +746,29 @@ def _code_language(pre_tag: Tag) -> str:
     return ""
 
 
+def _convert_iframes(body_tag: Tag) -> None:
+    """
+    Notion embed blocks (YouTube, Maps, Figma, …) export as an <iframe>
+    (sometimes wrapped in a <figure>). markdownify drops <iframe> entirely,
+    losing the embedded URL. Replace each <iframe src=...> (and its wrapping
+    <figure>, if any) with a plain link to that URL so the destination is
+    preserved. An <iframe> with no usable src is removed (nothing to keep).
+    """
+    for iframe in body_tag.find_all("iframe"):
+        if iframe.parent is None:
+            continue
+        target = iframe.find_parent("figure") or iframe
+        src = (iframe.get("src") or "").strip()
+        if not src:
+            target.decompose()
+            continue
+        new_p = _TAG_FACTORY.new_tag("p")
+        link = _TAG_FACTORY.new_tag("a", href=src)
+        link.string = src
+        new_p.append(link)
+        target.replace_with(new_p)
+
+
 def convert_body(
     body_tag: Optional[Tag],
     *,
@@ -783,6 +806,10 @@ def convert_body(
     # so we don't have to deal with their nested mess later.
     _clean_bookmark_figures(body_tag)
     _clean_source_figures(body_tag)
+
+    # Notion embed blocks (<iframe>) → a link to the embedded URL (markdownify
+    # would otherwise drop the iframe and lose the URL entirely).
+    _convert_iframes(body_tag)
 
     # Notion callouts (<figure class="callout">) → Obsidian `> [!type]` callouts.
     _convert_callouts(body_tag)
