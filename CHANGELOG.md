@@ -4,6 +4,16 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-18 — show the page title as a body heading
+
+Decision: write the Notion page title as an `# H1` at the top of each note's body (in `write_entry`, after the YAML frontmatter). Notion renders the page title at the top of the page; Obsidian shows only the filename, so without this the title was absent from the note's content, previews, exported Markdown, and transclusions/embeds.
+Context: divergence-audit item 65 (`test-output/divergence-audit-2026-06-18.md`). The HTML render is the fidelity benchmark, and it shows the title prominently.
+Alternatives: rely on Obsidian's "Show inline title" (which displays the filename) only — rejected: the title then never appears in exported Markdown or in embeds of the note.
+Trade-off: with "Show inline title" enabled, the title shows twice (the inline title plus the body H1).
+Tests: `Notion Database to Obsidian/test_mirrored_processing.py::test_note_body_starts_with_title_heading`.
+
+---
+
 ## 2026-06-18 — bookmarks: never drop the URL
 
 Decision: a Notion link bookmark (`<figure><a class="bookmark source">`) now always keeps its URL. Two parts: (1) when the bookmark title is present-but-EMPTY (Notion fetched no page title), fall back to the visible URL → raw href → "Link", instead of emitting an empty link that markdownify dropped — which silently produced a note with no body; (2) for a titled bookmark, also emit the URL as a visible autolink subtitle (`<url>`), matching the HTML bookmark card which shows the URL in addition to the title.

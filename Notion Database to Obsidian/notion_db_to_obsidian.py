@@ -1362,12 +1362,15 @@ def write_entry(
         for table in extra_tables:
             body_md = (body_md + "\n\n" + table) if body_md else table
 
-    # Compose
+    # Compose. The page title is emitted as a body H1: Notion renders the title
+    # at the top of the page, but Obsidian only shows the filename, so without
+    # this the title is absent from the note content, previews, and embeds.
     fm = yaml_dump_frontmatter(frontmatter)
     contents = fm
+    if contents and not contents.endswith("\n"):
+        contents += "\n"
+    contents += "\n# " + entry["title"] + "\n"
     if body_md:
-        if contents and not contents.endswith("\n"):
-            contents += "\n"
         contents += "\n" + body_md + "\n"
 
     actual_path = safe_write_text(

@@ -64,6 +64,13 @@ class MirroredProcessing(unittest.TestCase):
         self.assertTrue((self.out / "Animals" / "Cat.md").is_file())
         self.assertTrue((self.out / "Animals" / "Cat").is_dir())
 
+    def test_note_body_starts_with_title_heading(self):
+        # Notion renders the page title at the top of the page; the note body
+        # should open with an `# <Title>` H1 (item 65).
+        text = (self.out / "Animals" / "Cat.md").read_text(encoding="utf-8")
+        after_fm = text.split("---", 2)[-1].lstrip()
+        self.assertTrue(after_fm.startswith("# Cat"), after_fm[:80])
+
     def test_body_table_stays_markdown_table(self):
         # Cat's body has a real <table> — must render as a Markdown table,
         # never be mistaken for a nested database.
