@@ -1671,12 +1671,24 @@ def run_conversion(
 
     total_warnings: List[str] = []
     overwrite_log: List[str] = []
+    if attachment_mode in ("copy", "symlink") and any(db["owner_hex"] for db in databases):
+        msg = ("copy/symlink attachment mode on a NESTED export duplicates child-node "
+               "content under deep paths; use --inplace-attachments for nested exports.")
+        print(f"WARNING: {msg}")
+        total_warnings.append(msg)
 
     # Assign each database a "home" note that embeds its base + lists its entries;
     # give every entry an `↑ Part of [[home]]` backlink.
     for db in databases:
         entry_nodes = [nd for nd in nodes if nd["kind"] == "entry" and nd["db"] is db]
         child_names = [nd["name"] for nd in entry_nodes]
+        # Nesting that can't be mapped (owner folder renamed / missing its hex id)
+        # is reported, not silently mis-nested.
+        if db["owner_hex"] is None and db["entries_folder"].parent != src:
+            total_warnings.append(
+                f"database {db['name']!r}: nesting could not be mapped — its owner "
+                "folder is missing a Notion id (renamed?); treated as top-level."
+            )
         home = node_by_hex.get(db["owner_hex"]) if db["owner_hex"] else index_by_db.get(id(db))
         if home is None:
             total_warnings.append(

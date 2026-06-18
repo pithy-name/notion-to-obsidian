@@ -4,6 +4,18 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-18 — arbitrary-depth nesting, Piece 4: edge cases + regression
+
+Decision: round out the nested-directory feature with edge-case coverage and two best-effort warnings.
+- Edge tests (`test_edge_cases.py`): page-only export (no "database required" fatal), single-entry DB, a node owning multiple child DBs (multiple base embeds + link groups), folder-missing-hex (no crash + warning), copy attachment mode on a nested export (no crash).
+- Warning: copy/symlink attachment mode on a NESTED export duplicates child-node content under deep paths → recommends `--inplace-attachments`.
+- Warning: a nested DB whose owner folder lacks a Notion id (renamed) can't be mapped → reported and treated as top-level, never silently mis-nested.
+Context: spec acceptance criteria 9/10 + "Edge cases".
+Note: broad regression is covered by the existing per-feature suite (callouts / toggles / checkboxes / highlights / code-langs / tight lists / frontmatter / attachments / url / person / property keys), all green after the Piece 2–4 refactor. Known limitation: copy/symlink modes still *duplicate* child-node content on nested exports (use `--inplace`); a copy-time content filter is a possible follow-up.
+Tests: `Notion Database to Obsidian/test_edge_cases.py` (5 cases). Full suite 98 green.
+
+---
+
 ## 2026-06-18 — arbitrary-depth nesting, Piece 3: per-level bases, home notes, links & backlinks
 
 Decision: complete the nested-directory feature's linking/graph layer.
