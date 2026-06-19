@@ -25,7 +25,7 @@ Decision: complete the nested-directory feature's linking/graph layer.
 - **Refactor:** `run_conversion` builds a node registry (entries + index pages + standalone pages), assigns unique names, wires homes/links/backlinks, then writes. Removed the now-superseded `process_database` and `build_wikilink_map`.
 Context: spec acceptance criteria 5/6/7 (`docs/superpowers/specs/2026-06-17-nested-directory-support-design.md`).
 Alternatives: path-qualified wikilinks (rejected — brittle on move; name-based + unique filenames is move-proof); a static child summary table instead of a base embed (rejected — embedding is documented Obsidian behavior and drives the graph). Trade-offs: a top-level database with no index page has no home (its base is written but not embedded; warned). `.base`/embeds need Obsidian 1.9+; the `.md` notes and `[[links]]` work without it. One `.base` per nested DB (proliferation — acceptable, documented).
-Tests: `Notion Database to Obsidian/test_database_links_and_bases.py` (9 cases). Full suite 93 green.
+Tests (one feature per file): `Notion Database to Obsidian/test_per_level_bases.py`, `test_home_notes_and_backlinks.py`, `test_unique_filenames.py` (9 cases). Full suite green.
 
 ---
 
