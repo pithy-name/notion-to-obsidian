@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Piece 3 — per-level `.base`, database "home" notes, base embeds, parent/child
-wikilinks + backlinks, and vault-unique filenames.
+How databases are wired into the Obsidian graph: a same-level-scoped `.base`
+per database (plus the vault-wide base), each database's "home" note embedding
+its base and listing its entries as `[[wikilinks]]`, each entry's
+`↑ Part of [[home]]` backlink, and vault-unique filenames so name-based links
+resolve unambiguously.
 
-Spec acceptance criteria 5, 6, 7 (docs/superpowers/specs/2026-06-17-...).
-
-Run: /usr/bin/python3 test_piece3.py
+Run: /usr/bin/python3 test_database_links_and_bases.py
 """
 import tempfile
 import unittest
