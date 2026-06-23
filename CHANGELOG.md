@@ -11,7 +11,7 @@ Three fixes from an adversarial review of the landing-page + stem-naming work:
 - **`--force` no longer deletes an output attachment dir it won't refill.** In copy mode, when an entry's source folder holds only child-node content (nothing survives the attachment filter), a `--force` run used to `rmtree` the existing output dir and copy nothing back — silently destroying any hand-added files. It now removes only when it will recreate; otherwise the existing dir is kept.
 - **Report wording:** the "index/landing pages … not yet written … in a later step" line was stale; they are written as each database's home note.
 Tests: `Notion Database to Obsidian/test_wikilink_rewrite.py` (3 — bare/folder-prefixed link resolution; non-node basename stays a non-link); `test_copy_filters_node_content.py` gains a force-keep case. Full suite green.
-Known remaining (backlogged, pre-existing — see `TODO.md`): a landing page's own linked cover image is not rewritten to its copied location (broken image link on the note); cross-database `../` links that omit the `.html` extension don't resolve.
+Known remaining (backlogged, pre-existing — see `TODO.md`): a landing page's own linked cover image is not rewritten to its copied location (broken image link on the note). (An earlier note here about cross-database `../` links was withdrawn — that link does end in `.html` and resolves in a real export; it only appeared broken in the redacted test copy, where the redaction rendered the link text and the filename differently for the same Notion id.)
 
 ---
 
