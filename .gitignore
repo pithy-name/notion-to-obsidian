@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 *.pyo
+test-files/
 test-output/
 .claude/
 CLAUDE.local.md
