@@ -1602,12 +1602,21 @@ def assign_unique_names(nodes: List[Dict[str, Any]]) -> None:
     """
     Give every node a vault-unique `name` (the .md filename stem) so name-based
     wikilinks resolve unambiguously. Nodes are processed in the given order: the
-    first claimant of a sanitized title keeps it; later collisions get the short
-    Notion id appended (or a counter when there is no id).
+    first claimant of a name keeps it; later collisions get the short Notion id
+    appended (or a counter when there is no id).
+
+    The name is derived from the node's **source stem** (its `<Title> <hex>.html`
+    filename, hex stripped), NOT its H1 title. Notion sanitizes the on-disk
+    file/folder name (e.g. dropping square brackets) while the title keeps the
+    original characters; `mirror_output_dir` builds the folder tree from those
+    sanitized stems, so the note must use the same basis or its note/attachment
+    folder diverges from where its children mirror (duplicate sibling dirs). The
+    title is still rendered verbatim as the note's body `# <title>` heading.
     """
     seen: Dict[str, int] = {}
     for node in nodes:
-        base = sanitize_filename(node["parsed"]["title"])
+        stem = strip_notion_id(node["parsed"]["path"].stem).strip()
+        base = sanitize_filename(stem) or sanitize_filename(node["parsed"]["title"]) or "Untitled"
         if base not in seen:
             seen[base] = 1
             node["name"] = base

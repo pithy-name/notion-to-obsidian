@@ -4,6 +4,17 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-22 — note names come from the source stem, not the H1 title (dupe-dir fix)
+
+Decision: `assign_unique_names` now derives each note's filename from its source stem (the `<Title> <hex>` file/folder name, hex stripped) instead of its H1 title.
+Context: Notion sanitizes the on-disk file/folder name — e.g. dropping square brackets — while the page title keeps them. `mirror_output_dir` builds the folder tree from those sanitized stems, but the note + its attachment folder were named from the title via `sanitize_filename`. When the two differed, a node split into **two sibling directories**: its children mirrored under the stem name while its attachments landed in a title-named dir. A real export with a bracketed title (e.g. title `Group [Co] Hub`, on-disk folder `Group Co Hub`) produced two top-level dirs — one with the children, one with the landing page's images. (Surfaced once the landing/root page became a note and carried both children and attachments; latent for any such node before that.)
+Fix: name nodes from `sanitize_filename(strip_notion_id(stem))` — the exact basis `mirror_output_dir` uses — so the note, its attachment dir, and its children all share one folder. The H1 title is still rendered verbatim as the body `# <title>` heading; only the filename/wikilink name changes, and only when Notion's filename sanitization differs from the title.
+Verified on a real export: one top-level dir instead of two, no sibling near-duplicate dirs, the landing note's filename matching its children's folder; still 0 raw `.html`, 0 hex dirs, 0 empty dirs (35 notes, 17 attachments).
+Known latent edge (pre-existing, not introduced here): two sibling nodes with the *same* stripped stem still split (one note gets a ` (id)` suffix while both children mirror to the same base dir — a collision `mirror_output_dir` already merges). Logged for a later pass.
+Tests: `Notion Database to Obsidian/test_title_vs_folder_naming.py` (4 cases — note named from stem; no title-named split dir; attachment + children share one dir; title preserved as the body heading). Full suite green.
+
+---
+
 ## 2026-06-22 — collection/landing pages (incl. the export root) become notes
 
 Decision: a "parent" page (one with a `collection-content` table) whose hex matches no database's entries-folder is now written as a note instead of being dropped.
