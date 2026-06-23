@@ -4,6 +4,17 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-22 — red-team fixes: index/landing link resolution, force-delete safety, report wording
+
+Three fixes from an adversarial review of the landing-page + stem-naming work:
+- **Index & landing page body links now resolve.** `wikilink_map` is keyed on each node's filename (basename). An entry links to a sibling with a bare basename (direct hit), but an index/landing page links DOWN into a subfolder, so its hrefs carried a folder prefix and missed the map — leaving raw `.html` links (broken in Obsidian) in those notes. Added a basename fallback (filenames are vault-unique, so it resolves unambiguously). Entry links are unaffected.
+- **`--force` no longer deletes an output attachment dir it won't refill.** In copy mode, when an entry's source folder holds only child-node content (nothing survives the attachment filter), a `--force` run used to `rmtree` the existing output dir and copy nothing back — silently destroying any hand-added files. It now removes only when it will recreate; otherwise the existing dir is kept.
+- **Report wording:** the "index/landing pages … not yet written … in a later step" line was stale; they are written as each database's home note.
+Tests: `Notion Database to Obsidian/test_wikilink_rewrite.py` (3 — bare/folder-prefixed link resolution; non-node basename stays a non-link); `test_copy_filters_node_content.py` gains a force-keep case. Full suite green.
+Known remaining (backlogged, pre-existing — see `TODO.md`): a landing page's own linked cover image is not rewritten to its copied location (broken image link on the note); cross-database `../` links that omit the `.html` extension don't resolve.
+
+---
+
 ## 2026-06-22 — note names come from the source stem, not the H1 title (dupe-dir fix)
 
 Decision: `assign_unique_names` now derives each note's filename from its source stem (the `<Title> <hex>` file/folder name, hex stripped) instead of its H1 title.

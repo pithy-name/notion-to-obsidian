@@ -857,11 +857,20 @@ def convert_body(
         if decoded.startswith(("http://", "https://", "mailto:", "#")):
             continue
 
-        # Link to another entry in the same database? -> [[wikilink]].
-        # Keys in wikilink_map are decoded relative paths like "Some Title uuid.html".
-        # Checked before any attachment rewrite so .html links never become paths.
+        # Link to another node anywhere in the export -> [[wikilink]].
+        # `wikilink_map` is keyed on each node's filename (basename). An entry
+        # links to a sibling with a bare-basename href (direct match); an
+        # index/landing page links DOWN into a subfolder, so its href carries a
+        # folder prefix ("Resources abc/Aromatherapy def.html") — fall back to the
+        # basename. Filenames are vault-unique (they keep the Notion hex), so the
+        # basename resolves unambiguously. Checked before any attachment rewrite
+        # so .html links never become paths.
         if decoded in wikilink_map:
             a.replace_with(f"[[{wikilink_map[decoded]}]]")
+            continue
+        decoded_base = decoded.rsplit("/", 1)[-1]
+        if decoded_base != decoded and decoded_base in wikilink_map:
+            a.replace_with(f"[[{wikilink_map[decoded_base]}]]")
             continue
 
         # Inplace mode: prefix the relpath to the source export onto every local
@@ -1331,8 +1340,12 @@ def write_entry(
             if target_exists:
                 if force:
                     # Remove whatever is there (file, symlink, or directory)
-                    # before recreating in the requested mode.
-                    if not dry_run:
+                    # ONLY when we're about to recreate it. In copy mode with no
+                    # genuine attachment surviving the filter there is nothing to
+                    # recopy, so the existing output dir (which may hold
+                    # hand-added files) is left untouched rather than deleted.
+                    will_recreate = attachment_mode == "symlink" or copy_has_attachments
+                    if not dry_run and will_recreate:
                         if dest_attach.is_symlink() or dest_attach.is_file():
                             dest_attach.unlink()
                         else:
@@ -1359,9 +1372,9 @@ def write_entry(
                         )
                     else:  # copy, nothing genuine survives the filter
                         overwrite_log.append(
-                            f"{'WOULD REMOVE' if dry_run else 'REMOVED'} existing "
-                            f"attachment dir `{dest_attach.name}/` (--force); nothing "
-                            f"to recopy (only child-node content)."
+                            f"{'WOULD KEEP' if dry_run else 'KEPT'} existing attachment "
+                            f"dir `{dest_attach.name}/` (--force); source has only "
+                            f"child-node content, nothing to recopy."
                         )
                 else:
                     label = "symlink" if attachment_mode == "symlink" else "dir"
@@ -1880,8 +1893,8 @@ def _emit_conversion_report(
     if n_index:
         lines.append(
             f"- Database index/landing pages discovered: {n_index} "
-            "(not yet written as notes — they become each database's home note "
-            "in a later step)"
+            "(written as notes — each is its database's home note: it embeds the "
+            "`.base` and lists the entries)"
         )
     lines.append(f"- Attachment mode: `{attachment_mode}`")
     if attachment_mode in ("symlink", "inplace"):

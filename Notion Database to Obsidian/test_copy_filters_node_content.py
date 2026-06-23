@@ -161,6 +161,28 @@ class CopyModeForcePath(unittest.TestCase):
         self.assertEqual(hexd, [], f"force recopy leaked hex dirs: {hexd}")
         self.assertTrue((out / "Animals" / "Cat" / "cat-photo.png").is_file())
 
+    def test_force_does_not_delete_existing_dir_when_nothing_to_recopy(self):
+        # When an entry's source folder has only filtered (child-node) content,
+        # a --force run has nothing to recopy and must NOT delete a pre-existing
+        # output dir (which may hold hand-added files).
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        tmp = Path(td.name)
+        src, out = tmp / "src", tmp / "out"
+        build(src)
+        # Childless "Dog" with only a stray .html (filtered → no genuine attachment).
+        dog_dir = src / folder("Animals") / folder("Dog")
+        dog_dir.mkdir(parents=True, exist_ok=True)
+        (dog_dir / "loose-doc.html").write_text("<html><body>doc</body></html>", encoding="utf-8")
+        n.run_conversion(src, out)
+        # Simulate a hand-curated output dir for Dog.
+        out_dog = out / "Animals" / "Dog"
+        out_dog.mkdir(parents=True, exist_ok=True)
+        (out_dog / "my-notes.txt").write_text("keep me", encoding="utf-8")
+        n.run_conversion(src, out, force=True)
+        self.assertTrue((out_dog / "my-notes.txt").is_file(),
+                        "force run deleted a hand-added file when there was nothing to recopy")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
