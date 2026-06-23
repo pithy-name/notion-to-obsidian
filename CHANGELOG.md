@@ -4,6 +4,15 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-23 — strip trailing space after the Notion hex id (ghost-dir fix)
+
+Decision: `NOTION_ID_RE` now allows optional trailing whitespace after the 32-char hex (`\s*` before the end-anchored lookahead).
+Context: Notion sometimes exports a folder name with a trailing space after the hex — `"<Title> <hex> "`. The old pattern `\s+([0-9a-f]{32})(?=\.html$|/$|$)` anchored the hex to end-of-string (or `.html`/`/`), so a trailing space made the lookahead fail: `strip_notion_id` returned the name with the hex still attached, and `mirror_output_dir` emitted a ghost `"<name> <hex>"` directory — the clean nested path under it was effectively dropped. Latent since the regex was introduced; exposed by the arbitrary-depth nesting feature, which mirrors every such folder into the vault.
+Fix: `r"\s+([0-9a-f]{32})\s*(?=\.html$|/$|$)"` — the `\s*` is consumed by `re.sub`, so the hex and its trailing space are removed together. Fixes both `strip_notion_id` and `extract_notion_id`.
+Tests: `Notion Database to Obsidian/test_trailing_space_hex.py` (6 — strip/extract with and without the trailing space; an integration run asserting a trailing-space container folder produces no hex dir and the entry note lands at the clean path). Full suite green.
+
+---
+
 ## 2026-06-22 — red-team fixes: index/landing link resolution, force-delete safety, report wording
 
 Three fixes from an adversarial review of the landing-page + stem-naming work:

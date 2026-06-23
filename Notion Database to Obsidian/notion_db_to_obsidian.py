@@ -64,8 +64,11 @@ _TAG_FACTORY = BeautifulSoup("", "html.parser")
 
 # ---- Notion ID handling ----------------------------------------------------
 
-# Notion appends a 32-char hex ID to filenames and folder names.
-NOTION_ID_RE = re.compile(r"\s+([0-9a-f]{32})(?=\.html$|/$|$)", re.IGNORECASE)
+# Notion appends a 32-char hex ID to filenames and folder names. Notion
+# sometimes leaves a trailing space after the hex on folder names ("Title <hex> "),
+# so allow optional trailing whitespace inside the match — `re.sub` then strips
+# both the hex and the trailing space, leaving a clean name.
+NOTION_ID_RE = re.compile(r"\s+([0-9a-f]{32})\s*(?=\.html$|/$|$)", re.IGNORECASE)
 # UUID form (used in <article id="..."> attributes).
 UUID_DASHED_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
