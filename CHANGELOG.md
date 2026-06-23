@@ -4,17 +4,6 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
-## 2026-06-22 — a collection/landing page defers its databases' "home" to their own index notes
-
-Decision: a database owned by a collection/landing page (a folded `parent` page whose body is just a list of databases — e.g. the export root) now uses its OWN index note as home (embeds the `.base`, lists entries, receives the `↑ Part of` backlinks); the landing page stays a plain note. A database owned by a *content* node — a database entry, or a genuine standalone page — still uses that owner as home.
-Context: once landing pages became notes, the export root (owner of the top-level databases) became every top-level DB's home: a single mega-hub embedding every base, while each DB's own index note (`Resources.md`, …) sat bare and its entries backlinked to the root rather than to their database.
-Alternatives: (B) keep owner-as-home always — rejected (mega-hub; bare index notes; coarse backlinks); (C) always index-as-home — rejected, because it would also pull an entry-owned sub-database out of its parent entry, losing Notion's "a sub-database is shown inside its parent" reading. Chosen: split by owner TYPE — only collection/landing owners defer to the index; content owners (entries and genuine standalone pages) stay home.
-Implementation: `discover_tree` flags folded landing pages (`is_landing`), carried onto the page node as `is_collection_landing`; home resolution treats a content owner as the home and otherwise uses the database's own index note (falling back to the owner only when there is no index).
-Verified on a real export: the root is now a plain landing (no base embeds); each top-level DB's index note is its home (embeds its base; entries backlink to it, e.g. `Part of [[Resources]]`); entry-owned nested DBs are unchanged (still shown in their parent entry).
-Tests: `test_landing_page_notes.py` updated (landing defers to the DB index; entries backlink to the index); `test_home_notes_and_backlinks.py::test_page_can_own_a_database` confirms a genuine content page still acts as home. Full suite green.
-
----
-
 ## 2026-06-22 — note names come from the source stem, not the H1 title (dupe-dir fix)
 
 Decision: `assign_unique_names` now derives each note's filename from its source stem (the `<Title> <hex>` file/folder name, hex stripped) instead of its H1 title.
