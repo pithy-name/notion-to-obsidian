@@ -1190,6 +1190,35 @@ def emit_types_json(
 # ---- Main pipeline ---------------------------------------------------------
 
 
+def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
+    """`shutil.copytree` ignore callback: keep genuine attachments, drop child nodes.
+
+    On a nested export an entry's source folder ("<Title> <hex>/") holds both
+    real attachments (images, PDFs) AND the entry's child nodes — each a
+    "<Child> <hex>.html" file with an optional sibling "<Child> <hex>/" folder.
+    Those child nodes are converted to their own .md notes elsewhere, so copying
+    them here would duplicate every nested node (the reported "<name>.md" vs
+    "<name> <hex>.html" dupes). Skip them; copy only true attachments.
+
+    A name is child-node content iff it is an "*.html" file, or a directory that
+    has a sibling "<name>.html" in the same listing (the node's folder). This is
+    structural to Notion's export layout, not a heuristic guess.
+
+    The sibling match is case-insensitive: the ".html" file test folds case, so
+    a folder paired with an uppercase "<name>.HTML" (from a case-preserving tool)
+    must be recognised too, or the node folder would leak while its html is
+    filtered.
+    """
+    lower_names = {n.lower() for n in names}
+    ignored: Set[str] = set()
+    for name in names:
+        if name.lower().endswith(".html"):
+            ignored.add(name)
+        elif (name.lower() + ".html") in lower_names and os.path.isdir(os.path.join(dir_path, name)):
+            ignored.add(name)
+    return ignored
+
+
 def write_entry(
     entry: Dict[str, Any],
     out_dir: Path,
@@ -1286,6 +1315,16 @@ def write_entry(
             # copy or symlink: clean title becomes the new basename.
             new_attach_basename = candidate
             dest_attach = out_dir / candidate
+            # In copy mode, only materialize the dir if a genuine attachment
+            # survives the child-node filter. Otherwise copytree would create an
+            # empty folder: an entry's child nodes are written by the main loop
+            # (each makes its own dir), not by this copy, so a folder holding
+            # only child-node content has nothing to copy here.
+            copy_has_attachments = True
+            if attachment_mode == "copy":
+                src_names = os.listdir(src_attach_dir)
+                _ignored = _attachment_copy_ignore(str(src_attach_dir), src_names)
+                copy_has_attachments = any(nm not in _ignored for nm in src_names)
             # `is_symlink()` returns True for broken symlinks (where .exists()
             # is False), so check both to detect any existing target.
             target_exists = dest_attach.exists() or dest_attach.is_symlink()
@@ -1307,12 +1346,22 @@ def write_entry(
                             f"→ `{src_attach_dir.resolve()}` "
                             f"(--force, --symlink-attachments)."
                         )
-                    else:  # copy
+                    elif copy_has_attachments:  # copy
                         if not dry_run:
-                            shutil.copytree(src_attach_dir, dest_attach)
+                            shutil.copytree(
+                                src_attach_dir, dest_attach,
+                                ignore=_attachment_copy_ignore,
+                            )
                         overwrite_log.append(
                             f"{'WOULD OVERWRITE' if dry_run else 'OVERWROTE'} "
-                            f"existing attachment dir: `{dest_attach.name}/` (--force)."
+                            f"existing attachment dir: `{dest_attach.name}/` (--force; "
+                            f"child-node HTML/folders skipped)."
+                        )
+                    else:  # copy, nothing genuine survives the filter
+                        overwrite_log.append(
+                            f"{'WOULD REMOVE' if dry_run else 'REMOVED'} existing "
+                            f"attachment dir `{dest_attach.name}/` (--force); nothing "
+                            f"to recopy (only child-node content)."
                         )
                 else:
                     label = "symlink" if attachment_mode == "symlink" else "dir"
@@ -1331,14 +1380,22 @@ def write_entry(
                             f"WOULD CREATE symlink `{dest_attach.name}` → "
                             f"`{src_attach_dir.resolve()}`."
                         )
-                else:  # copy
+                elif copy_has_attachments:  # copy
                     if not dry_run:
-                        shutil.copytree(src_attach_dir, dest_attach)
+                        shutil.copytree(
+                            src_attach_dir, dest_attach,
+                            ignore=_attachment_copy_ignore,
+                        )
                     if dry_run:
                         overwrite_log.append(
-                            f"WOULD COPY attachment dir `{src_attach_basename}/` "
-                            f"→ `{dest_attach.name}/`."
+                            f"WOULD COPY attachments from `{src_attach_basename}/` "
+                            f"→ `{dest_attach.name}/` (child-node HTML/folders skipped)."
                         )
+                elif dry_run:  # copy, nothing genuine survives the filter
+                    overwrite_log.append(
+                        f"WOULD SKIP attachment copy for `{src_attach_basename}/` "
+                        f"(only child-node content; no genuine attachments)."
+                    )
 
     # Build YAML frontmatter (insertion order = schema order).
     frontmatter: "OrderedDict[str, Any]" = OrderedDict()
@@ -1671,9 +1728,10 @@ def run_conversion(
 
     total_warnings: List[str] = []
     overwrite_log: List[str] = []
-    if attachment_mode in ("copy", "symlink") and any(db["owner_hex"] for db in databases):
-        msg = ("copy/symlink attachment mode on a NESTED export duplicates child-node "
-               "content under deep paths; use --inplace-attachments for nested exports.")
+    if attachment_mode == "symlink" and any(db["owner_hex"] for db in databases):
+        msg = ("symlink attachment mode on a NESTED export exposes child-node content "
+               "through the symlinked source folder; use --inplace-attachments (or the "
+               "default copy mode, which filters child nodes) for nested exports.")
         print(f"WARNING: {msg}")
         total_warnings.append(msg)
 

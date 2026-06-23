@@ -58,7 +58,11 @@ python3 notion_db_to_obsidian.py \
 By default, `-o` writes a **fully self-contained** output folder. Every
 per-entry attachment directory in the source export (PDFs, images,
 audio, video, etc.) is copied into the output via `shutil.copytree`,
-and md hrefs are rewritten to point at the new copies. The copy step
+and md hrefs are rewritten to point at the new copies. On a **nested**
+export an entry's folder also contains its child nodes (their
+`<Child> <hex>.html` files and folders); the copy **filters those out**
+and copies only genuine attachments, so child nodes appear once — as
+their own converted note — never also as a raw duplicate. The copy step
 means:
 
 - The output folder works on its own, even if you later delete the
@@ -85,7 +89,7 @@ entry's attachment directory is materialized in the output:
 
 | Mode | Disk usage | Output filesystem objects | Source dependency | Status |
 |------|-----------|---------------------------|-------------------|--------|
-| `copy` (default) | ~2× | Real attachment dirs | None — output is self-contained | Tested in production |
+| `copy` (default) | ~2× (attachments only) | Real attachment dirs (child-node HTML/folders filtered out) | None — output is self-contained | Tested in production |
 | `--symlink-attachments` | ~1× | Symlinks pointing at source | Source dir must stay where it is | Filesystem-level OK; Obsidian render UNVERIFIED |
 | `--inplace-attachments` | ~1× | None for attachments | Source dir must stay at the same relative path from the output | Filesystem-level OK; Obsidian render UNVERIFIED |
 

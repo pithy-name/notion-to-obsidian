@@ -4,6 +4,19 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-22 — copy attachment mode filters child-node content (dupe fix)
+
+Decision: in `copy` mode, copy only genuine attachments from an entry's source folder; skip the child-node tree it also contains.
+Context: on a nested export an entry's folder (`<Title> <hex>/`) holds both real attachments (images, PDFs) AND the entry's child nodes (`<Child> <hex>.html` + `<Child> <hex>/`). The default `copy` mode `shutil.copytree`'d the whole folder, so every nested node landed in the vault twice — once as the clean `<Child>.md` note, once as the raw `<Child> <hex>.html` (+ hex folder). On a real export this turned 34 source `.html` into 59 copies plus 27 stray hex-named dirs. The Piece-4 warning flagged this but the behavior shipped anyway.
+Fix: a `shutil.copytree(ignore=...)` callback (`_attachment_copy_ignore`) drops any `*.html` and any directory that has a (case-insensitive) sibling `<name>.html` (a node folder), copying only true attachments. The rule is structural to Notion's export layout, not a heuristic. The depth-duplication warning now fires for `symlink` mode only (which still exposes child nodes through the symlinked source dir); `copy` no longer warns.
+Hardened after an adversarial review: (a) the sibling-html match is case-folded, so an uppercase `<name>.HTML` from a case-preserving tool no longer leaks the node folder while filtering its html; (b) copy mode now skips `copytree` entirely when nothing survives the filter, so an entry whose folder holds only child-node content no longer leaves an empty directory in the vault (children make their own dirs in the main write loop); the force-overwrite copytree branch carries the same filter and a matching dry-run log.
+Alternatives: auto-switch nested exports to `inplace` (rejected — leaves genuine image attachments pointing back at the source export instead of copied into the vault); document `--inplace-attachments` as required (rejected — silent dupes by default). Trade-off: a stray non-node `.html` attachment (rare in Notion exports) would also be skipped; acceptable.
+Verified on a real export: output `.html` 59 → 0, hex dirs 27 → 0, empty dirs 1 → 0, `.md` count unchanged (34), all 15 genuine attachments preserved.
+Separately flagged (NOT fixed here — distinct concern, backlogged): the whole-export root/landing page is not written as a note, so its inline images (2 in this export) are orphaned. Pre-existing; present before this change too. The README intro's pre-PR description of nested DBs (inline tables, depth-3 fatal) is also stale and should be rewritten before the nesting PR merges.
+Tests: `Notion Database to Obsidian/test_copy_filters_node_content.py` (9 cases — attachment copied; no `.html`/hex-dir leak; child notes intact; uppercase-`.HTML` sibling filtered; non-node attachment dir kept; no empty dirs; force-recopy invariants). Full suite green.
+
+---
+
 ## 2026-06-18 — arbitrary-depth nesting, Piece 4: edge cases + regression
 
 Decision: round out the nested-directory feature with edge-case coverage and two best-effort warnings.
