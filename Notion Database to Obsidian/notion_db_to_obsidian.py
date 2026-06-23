@@ -1581,9 +1581,9 @@ def discover_tree(src: Path) -> Dict[str, Any]:
     # still has a body and attachments and (by hex) owns the databases beneath it,
     # so it must become a note, not be dropped. Fold these into the page list.
     consumed_index_hexes = {db["hex"] for db in databases if db["index_path"] is not None}
-    for h, idx_path in index_by_hex.items():
-        if h not in consumed_index_hexes:
-            page_paths.append(idx_path)
+    landing_paths = [idx for h, idx in index_by_hex.items() if h not in consumed_index_hexes]
+    landing_set = set(landing_paths)
+    page_paths.extend(landing_paths)
 
     pages: List[Dict[str, Any]] = []
     for p in page_paths:
@@ -1593,6 +1593,10 @@ def discover_tree(src: Path) -> Dict[str, Any]:
             "hex": extract_notion_id(p.name),
             "owner_hex": owner_hex_of(p),
             "depth": len(p.relative_to(src).parts) - 1,
+            # A folded collection/landing page (a `parent` page that indexes no
+            # entries-folder) is just a container of databases, not content — so
+            # a database it owns uses its own index note as home, not this page.
+            "is_landing": p in landing_set,
         })
 
     return {"databases": databases, "pages": pages}
@@ -1718,6 +1722,7 @@ def run_conversion(
             "parsed": parsed,
             "out_dir": mirror_output_dir(pg["path"].parent, src, out_root),
             "kind": "page", "db": None,
+            "is_collection_landing": pg.get("is_landing", False),
         })
 
     # Stable order → deterministic vault-unique filenames.
@@ -1767,7 +1772,19 @@ def run_conversion(
                 f"database {db['name']!r}: nesting could not be mapped — its owner "
                 "folder is missing a Notion id (renamed?); treated as top-level."
             )
-        home = node_by_hex.get(db["owner_hex"]) if db["owner_hex"] else index_by_db.get(id(db))
+        # Home resolution. A database's home embeds its .base, lists its entries,
+        # and receives their backlinks. A *content* owner (a database entry, or a
+        # genuine standalone page) is the home — the sub-database reads as part of
+        # its parent, mirroring Notion. A *collection/landing* owner (a folded
+        # `parent` page, e.g. the export root) is only a container, so the
+        # database uses its OWN index note as home instead, and the landing stays
+        # a plain note. Top-level databases (no owner) use their own index too.
+        owner = node_by_hex.get(db["owner_hex"]) if db["owner_hex"] else None
+        owner_is_content = owner is not None and not owner.get("is_collection_landing")
+        if owner_is_content:
+            home = owner
+        else:
+            home = index_by_db.get(id(db)) or owner
         if home is None:
             total_warnings.append(
                 f"database {db['name']!r}: no home note found; its .base is written "

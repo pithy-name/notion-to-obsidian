@@ -9,9 +9,12 @@ table — so it classifies as a database parent — yet its own folder holds chi
 was silently dropped: no note, its inline images orphaned, and every database it
 owns reported "no home note found".
 
-Such a page must be written as a note: its attachments copied, and (because it
-owns the top-level databases) it becomes their home — embedding each child
-`.base` and listing entry `[[wikilinks]]`, with each entry backlinking to it.
+Such a page must be written as a note with its attachments copied. Because it is
+a *collection/landing* page (its body is just a list of databases), it does NOT
+become their home — each database it owns uses its OWN index note as home (embeds
+the `.base`, lists entries, receives the `↑ Part of` backlinks); the landing page
+stays a plain landing. (A genuine *content* page that owns a database — see
+test_home_notes_and_backlinks — still acts as that database's home.)
 
 Run: /usr/bin/python3 test_landing_page_notes.py
 """
@@ -55,15 +58,19 @@ class LandingPageBecomesNote(unittest.TestCase):
         self.assertTrue((self.out / "Hub" / "Stuff" / "Item A.md").is_file())
         self.assertTrue((self.out / "Hub" / "Stuff" / "Item B.md").is_file())
 
-    def test_landing_page_is_home_for_its_database(self):
-        # It owns "Stuff" → embeds the base and lists the entries.
-        text = (self.out / "Hub.md").read_text(encoding="utf-8")
-        self.assertIn("![[Stuff.base]]", text)
-        self.assertIn("[[Item A]]", text)
+    def test_db_index_is_home_not_the_landing_page(self):
+        # A collection/landing page defers to the database's OWN index note as
+        # home: Stuff.md embeds the base + lists entries; the landing page does
+        # not (it is a plain landing, not a mega-hub).
+        index = (self.out / "Hub" / "Stuff.md").read_text(encoding="utf-8")
+        self.assertIn("![[Stuff.base]]", index)
+        self.assertIn("[[Item A]]", index)
+        landing = (self.out / "Hub.md").read_text(encoding="utf-8")
+        self.assertNotIn("![[Stuff.base]]", landing)
 
-    def test_owned_entries_backlink_to_landing_page(self):
+    def test_owned_entries_backlink_to_db_index(self):
         text = (self.out / "Hub" / "Stuff" / "Item A.md").read_text(encoding="utf-8")
-        self.assertIn("[[Hub]]", text)
+        self.assertIn("Part of [[Stuff]]", text)
 
 
 if __name__ == "__main__":
