@@ -4,6 +4,17 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-22 — collection/landing pages (incl. the export root) become notes
+
+Decision: a "parent" page (one with a `collection-content` table) whose hex matches no database's entries-folder is now written as a note instead of being dropped.
+Context: `classify_html` labels any `collection-content` page `parent`, and `discover_tree` only kept a parent page if it was some database's index (its hex == that database's entries-folder hex). A page that *contains* child databases rather than entry rows — most importantly the export's own root/landing page — matched nothing, so it was silently orphaned: no note, its inline images lost, and every database it owned reported "no home note found" (the owner node didn't exist). On a real export this dropped the root page and orphaned 2 images.
+Fix: `discover_tree` now folds every unconsumed `parent` page into the page list, so it becomes a `kind="page"` node. Because these pages own the databases beneath them (by hex), the existing owner→home wiring then makes each one the home for its databases — embedding their `.base`, listing `[[entry]]` links, and giving entries an `↑ Part of [[home]]` backlink. The owner's inline collection-snapshot table is already stripped before body conversion, so no duplication. Composes with the copy-attachment filter: the landing page's genuine images are copied; the child-DB HTML/folders in its folder are not.
+Verified on a real export: the root page is now a note (`.md` 34 → 35), both previously-orphaned images are recovered (attachments 15 → 17), and the two "no home note found" warnings are gone; still 0 raw `.html`, 0 hex dirs, 0 empty dirs.
+Docs: refreshed both READMEs (intro, output tree, the rewritten "Nesting (any depth)" section, removed two now-false "Known limitations") and the project `CLAUDE.md` invariants (no depth limit; per-database `.base` + vault-wide), all of which still described the superseded "nested DBs → inline tables, depth ≥ 3 fatal" model.
+Tests: `Notion Database to Obsidian/test_landing_page_notes.py` (5 cases — landing page written; its attachment copied; owned-DB entries written; landing page embeds the child base + lists entries; entries backlink to it). Full suite green.
+
+---
+
 ## 2026-06-22 — copy attachment mode filters child-node content (dupe fix)
 
 Decision: in `copy` mode, copy only genuine attachments from an entry's source folder; skip the child-node tree it also contains.

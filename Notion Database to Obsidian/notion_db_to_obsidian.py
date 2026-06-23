@@ -1574,6 +1574,17 @@ def discover_tree(src: Path) -> Dict[str, Any]:
             "depth": len(ef.relative_to(src).parts),
         })
 
+    # A "parent" page (collection-content) is only a database's index when its
+    # hex matches that database's entries-folder. A parent page whose hex matches
+    # no entries-folder is a collection/landing page — typically the export root,
+    # or any hub page that contains child *databases* rather than entry rows. It
+    # still has a body and attachments and (by hex) owns the databases beneath it,
+    # so it must become a note, not be dropped. Fold these into the page list.
+    consumed_index_hexes = {db["hex"] for db in databases if db["index_path"] is not None}
+    for h, idx_path in index_by_hex.items():
+        if h not in consumed_index_hexes:
+            page_paths.append(idx_path)
+
     pages: List[Dict[str, Any]] = []
     for p in page_paths:
         pages.append({
