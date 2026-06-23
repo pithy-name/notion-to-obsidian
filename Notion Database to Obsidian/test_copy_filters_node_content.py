@@ -102,15 +102,31 @@ class IgnoreCallbackEdges(unittest.TestCase):
     def test_db_folder_containing_html_entries_is_filtered(self):
         # A nested database folder (e.g. "Bug Catalog <hex>/") sits inside an
         # outer attachment folder. It has NO sibling ".html" at the outer level
-        # but DOES contain ".html" files inside it (the DB's own entries). It
-        # must be filtered out — copying it would ghost-duplicate all DB entries.
-        db_dir = self.d / "Bug Catalog abc123"
+        # but DOES contain Notion-node ".html" files inside it (its entries, each
+        # named "<Entry> <hex>.html"). It must be filtered out — copying it would
+        # ghost-duplicate all DB entries.
+        db_dir = self.d / "Bug Catalog 0123456789abcdef0123456789abcdef"
         db_dir.mkdir()
-        (db_dir / "Entry One def456.html").write_text("<html></html>", encoding="utf-8")
+        (db_dir / "Entry One fedcba9876543210fedcba9876543210.html").write_text(
+            "<html></html>", encoding="utf-8")
         (self.d / "real-attachment.png").write_text("x", encoding="utf-8")
         ignored = n._attachment_copy_ignore(str(self.d), os.listdir(self.d))
-        self.assertIn("Bug Catalog abc123", ignored, "DB folder should be filtered")
+        self.assertIn("Bug Catalog 0123456789abcdef0123456789abcdef", ignored,
+                      "DB folder should be filtered")
         self.assertNotIn("real-attachment.png", ignored, "real attachment must be kept")
+
+    def test_attachment_subdir_with_non_node_html_is_kept(self):
+        # A user's own attachment subfolder may contain a NON-node ".html" — a
+        # saved web page or HTML export — whose name carries no Notion id. It is
+        # not a database folder and must be kept; filtering on bare ".html"
+        # silently dropped such folders (data loss). Keyed on the node-id pattern.
+        gallery = self.d / "gallery"
+        gallery.mkdir()
+        (gallery / "index.html").write_text("<html>saved page</html>", encoding="utf-8")
+        (gallery / "photo.jpg").write_text("x", encoding="utf-8")
+        ignored = n._attachment_copy_ignore(str(self.d), os.listdir(self.d))
+        self.assertNotIn("gallery", ignored,
+                         "genuine attachment subdir with a non-node .html must be kept")
 
 
 class CopyModeNoEmptyDirs(unittest.TestCase):

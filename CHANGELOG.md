@@ -4,6 +4,15 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-23 — narrow the nested-DB filter to node HTML (avoid dropping real attachment folders)
+
+Decision: the rule that filters a nested database folder out of the attachment copy now fires only when the folder directly contains a Notion-NODE html (`<Entry> <hex>.html`), not any `*.html` (helper renamed `_dir_contains_html` → `_dir_contains_node_html`).
+Context: adversarial review of the earlier "filter nested database folders" fix found a data-loss false positive. That rule dropped any directory directly holding an `.html` file — including a GENUINE attachment subfolder that happens to contain a non-node html (a saved web page or HTML export the user attached). `gallery/index.html` + `gallery/photo.jpg` made the whole `gallery/` folder, `photo.jpg` and all, vanish silently. The earlier "structural, not a heuristic" claim did not hold for that rule.
+Fix: key the rule on the Notion node-id pattern. A database's entries are `<Entry> <hex>.html`, so requiring a 32-hex id in the html's stem distinguishes a real DB folder from a user attachment folder whose html carries no id — restoring the structural property and stopping the data loss. A residual ambiguity remains only for a user file coincidentally named `<x> <32hex>.html` (inherent to filename heuristics, and far rarer than the bare-`.html` surface it replaces).
+Tests: `Notion Database to Obsidian/test_copy_filters_node_content.py` — the DB-folder case now uses realistic 32-hex ids; new `test_attachment_subdir_with_non_node_html_is_kept` guards the false positive (12 cases). Full suite green.
+
+---
+
 ## 2026-06-23 — filter nested database folders during attachment copy (ghost-dupe fix)
 
 Decision: `_attachment_copy_ignore` now also ignores a directory that itself contains `*.html` files (a nested database folder).

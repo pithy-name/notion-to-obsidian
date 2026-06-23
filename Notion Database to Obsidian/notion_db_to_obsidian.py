@@ -1236,19 +1236,29 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
             ignored.add(name)
         elif (name.lower() + ".html") in lower_names and os.path.isdir(child):
             ignored.add(name)
-        elif os.path.isdir(child) and _dir_contains_html(child):
+        elif os.path.isdir(child) and _dir_contains_node_html(child):
             ignored.add(name)
     return ignored
 
 
-def _dir_contains_html(dir_path: str) -> bool:
-    """True if dir_path directly holds any "*.html" file (a node/database folder)."""
+def _dir_contains_node_html(dir_path: str) -> bool:
+    """True if dir_path directly holds a Notion-node html ("<stem> <hex>.html").
+
+    A nested database's entries-folder holds its entries as "<Entry> <hex>.html",
+    so a directory containing a Notion-node html (one whose stem carries a 32-hex
+    id) is that database's folder and must be skipped. Keying on the node-id
+    pattern — not on any ".html" — is deliberate: a genuine user attachment
+    subfolder can legitimately contain a non-node ".html" (a saved web page, an
+    HTML export), and filtering on bare ".html" silently dropped such folders.
+    """
     try:
         entries = os.listdir(dir_path)
     except OSError:
         return False
     return any(
-        e.lower().endswith(".html") and os.path.isfile(os.path.join(dir_path, e))
+        e.lower().endswith(".html")
+        and os.path.isfile(os.path.join(dir_path, e))
+        and extract_notion_id(os.path.splitext(e)[0])
         for e in entries
     )
 
