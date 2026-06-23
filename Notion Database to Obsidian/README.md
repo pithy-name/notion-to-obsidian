@@ -191,7 +191,10 @@ Attachment directories follow the same safe-by-default contract:
 - `--force`: the existing attachment dir is removed and replaced with
   a fresh copy from the source export. Any hand-added files inside
   the existing dir are lost. The refresh is logged under
-  **"Overwrites (--force)"**.
+  **"Overwrites (--force)"**. Exception: if the source folder holds only
+  child-node content (no genuine attachment survives the copy filter),
+  there is nothing to recopy, so the existing dir is **kept** rather than
+  deleted (logged as "KEPT").
 
 A `--force` run also cleans up stale `.new` siblings left behind by a
 prior safe-mode run: when the script overwrites `MyDB.base`, it also
@@ -298,7 +301,11 @@ that node is the database's **home**: its note embeds the database's `.base`
 (`![[<DB>.base]]`) and lists the entries as `[[wikilinks]]`, and each entry gets
 an `↑ Part of [[home]]` backlink. Wikilinks are name-based, so they survive moves
 within the vault; filenames are made vault-unique (a short Notion id is appended
-on collision).
+on collision). A note's filename comes from Notion's on-disk file name (the
+title as Notion sanitized it for the filesystem, e.g. with square brackets
+dropped), so it can differ slightly from the page title — the full title is still
+shown as the note's `# H1`. Using the on-disk name keeps each note, its
+attachments, and its children in one folder.
 
 If Notion embedded a static snapshot of an owned database as an inline `<table>`
 in the owner's HTML body, that table is stripped before conversion so the output
