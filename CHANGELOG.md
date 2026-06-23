@@ -4,6 +4,15 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-23 — filter nested database folders during attachment copy (ghost-dupe fix)
+
+Decision: `_attachment_copy_ignore` now also ignores a directory that itself contains `*.html` files (a nested database folder).
+Context: the copy-mode attachment filter skipped `*.html` files and any directory paired with a sibling `<name>.html` (a node's attachment folder), but a nested *database* folder has neither marker at its parent level: `"<DB> <hex>/"` holds its entries as `"<Entry> <hex>.html"` *inside* it, with no `"<DB> <hex>.html"` sibling next to it. So when such a DB folder sat inside another entry's source folder, `copytree` copied it wholesale — ghost-duplicating every DB entry as a raw `"<Entry> <hex>.html"` (and hex dir) beside the clean `"<Entry>.md"`. Same class of dupe the 2026-06-22 copy-filter fix addressed, for the one structural case it missed. Latent in the original filter; exposed by deeper nesting.
+Fix: add a third rule keyed on a new helper `_dir_contains_html(dir)` — a directory holding any `*.html` file directly is child-node content and is skipped. Structural to Notion's export layout, not a heuristic. `copy_has_attachments` (which decides whether to materialize the dir at all) inherits the rule, so a folder of only DB content still leaves no empty dir.
+Tests: `Notion Database to Obsidian/test_copy_filters_node_content.py` gains `test_db_folder_containing_html_entries_is_filtered` (DB folder filtered; genuine sibling attachment kept) — 11 cases total. Full suite green.
+
+---
+
 ## 2026-06-23 — strip trailing space after the Notion hex id (ghost-dir fix)
 
 Decision: `NOTION_ID_RE` now allows optional trailing whitespace after the 32-char hex (`\s*` before the end-anchored lookahead).

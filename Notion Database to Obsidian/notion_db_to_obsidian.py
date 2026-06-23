@@ -1212,9 +1212,16 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
     them here would duplicate every nested node (the reported "<name>.md" vs
     "<name> <hex>.html" dupes). Skip them; copy only true attachments.
 
-    A name is child-node content iff it is an "*.html" file, or a directory that
-    has a sibling "<name>.html" in the same listing (the node's folder). This is
-    structural to Notion's export layout, not a heuristic guess.
+    A name is child-node content iff it is one of:
+      - an "*.html" file (a node, converted to its own note);
+      - a directory with a sibling "<name>.html" in the same listing (the node's
+        attachment folder); or
+      - a directory that itself contains "*.html" files (a nested database
+        folder — its entries are "<Entry> <hex>.html" inside, with no
+        "<name>.html" sibling at this level).
+    All three are structural to Notion's export layout, not a heuristic guess.
+    The DB-folder case is what kept nested databases sitting inside an attachment
+    folder from being ghost-duplicated into the vault.
 
     The sibling match is case-insensitive: the ".html" file test folds case, so
     a folder paired with an uppercase "<name>.HTML" (from a case-preserving tool)
@@ -1224,11 +1231,26 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
     lower_names = {n.lower() for n in names}
     ignored: Set[str] = set()
     for name in names:
+        child = os.path.join(dir_path, name)
         if name.lower().endswith(".html"):
             ignored.add(name)
-        elif (name.lower() + ".html") in lower_names and os.path.isdir(os.path.join(dir_path, name)):
+        elif (name.lower() + ".html") in lower_names and os.path.isdir(child):
+            ignored.add(name)
+        elif os.path.isdir(child) and _dir_contains_html(child):
             ignored.add(name)
     return ignored
+
+
+def _dir_contains_html(dir_path: str) -> bool:
+    """True if dir_path directly holds any "*.html" file (a node/database folder)."""
+    try:
+        entries = os.listdir(dir_path)
+    except OSError:
+        return False
+    return any(
+        e.lower().endswith(".html") and os.path.isfile(os.path.join(dir_path, e))
+        for e in entries
+    )
 
 
 def write_entry(
