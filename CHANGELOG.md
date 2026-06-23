@@ -4,6 +4,18 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-23 — preserve orphaned non-HTML files (PDF-only sections, loose attachments)
+
+Decision: a new post-pass `copy_orphaned_files` copies every non-HTML source file that no node's attachment copy reaches, so a Notion page exported as a PDF — or any loose attachment in a section with no entry HTML — lands in the vault instead of being dropped.
+Context: `discover_tree` finds entries only via `*.html`. A PDF-only export section produces no node, so `write_entry` never runs and `shutil.copytree` never fires — the files vanished with no warning. On real exports this dropped whole PDF-exported pages.
+Fix: after all nodes are written, walk every non-HTML source file and copy the ones not already handled. "Handled" is an EXACT test, not a guess: the file lives under some node's own attachment dir (`<Title> <hex>/`, collected into `covered_dirs`), which `write_entry` already copied/symlinked. Copied files keep their ORIGINAL name; only directory components are hex-stripped (via `mirror_output_dir`) — the dirs, not the filename, carry the vault's "no hex dirs" invariant.
+Collision safety: two distinct source folders can hex-strip to the same output dir (`Folder <hexA>/x.pdf` and `Folder <hexB>/x.pdf` → `Folder/x.pdf`). Rather than overwrite, the pass byte-compares — identical content is the same file (a re-run or a node's copy) and is skipped; different content is written under a disambiguated `x (2).pdf` name and the clash is logged. Re-runs are stable.
+Attachment modes: respects the chosen mode — under `--inplace`/`--symlink`, attachments are referenced in the source, so files under a node's dir are skipped in every mode (no stray real copies); true orphans, which no note references, are always copied as real files so they are not lost.
+Two adversarial reviews drove the design. An earlier attempt stripped the hex from filenames (broke body hrefs that reference the original name; collapsed two same-title PDF exports onto one path, losing one) and skipped hex-named files during the node copy (dropped genuine attachments whose names end in a 32-hex); both were reverted for the original-name + covered-dirs design. Known limitations left as-is (pre-existing or by design): a stray non-node `.html` *inside* an attachment tree is still dropped by the child-node filter; a user file coincidentally named `<x> <32hex>.html` is treated as a node; `--inplace` deliberately does not copy covered attachments into the vault.
+Tests: `Notion Database to Obsidian/test_orphaned_pdf_copy.py` (15 — root-level + nested orphans keep their original names; a loose PDF beside DB entries; covered files not duplicated; two same-stem orphans both survive; a genuine hex-named attachment keeps a resolvable href; two folders colliding after the hex-strip both survive with a stable re-run). Full suite green (143).
+
+---
+
 ## 2026-06-23 — narrow the nested-DB filter to node HTML (avoid dropping real attachment folders)
 
 Decision: the rule that filters a nested database folder out of the attachment copy now fires only when the folder directly contains a Notion-NODE html (`<Entry> <hex>.html`), not any `*.html` (helper renamed `_dir_contains_html` → `_dir_contains_node_html`).

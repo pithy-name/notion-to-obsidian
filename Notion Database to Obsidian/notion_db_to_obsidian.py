@@ -30,6 +30,7 @@ Dependencies (pip install):
 from __future__ import annotations
 
 import argparse
+import filecmp
 import json
 import os
 import re
@@ -1223,6 +1224,12 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
     The DB-folder case is what kept nested databases sitting inside an attachment
     folder from being ghost-duplicated into the vault.
 
+    Genuine attachment FILES are always kept (copied with their original name so
+    the body href resolves) — even one whose name happens to end in a 32-hex id.
+    Notion pages exported as a non-HTML file ("<Title> <hex>.pdf") are also kept
+    with their original name; `copy_orphaned_files` only places the ones that no
+    node's attachment copy reaches, and never with a renamed (hex-stripped) file.
+
     The sibling match is case-insensitive: the ".html" file test folds case, so
     a folder paired with an uppercase "<name>.HTML" (from a case-preserving tool)
     must be recognised too, or the node folder would leak while its html is
@@ -1685,6 +1692,95 @@ def mirror_output_dir(src_folder: Path, src_root: Path, out_root: Path) -> Path:
     return out_root.joinpath(*parts)
 
 
+def copy_orphaned_files(
+    src: Path,
+    out_root: Path,
+    covered_dirs: Set[Path],
+    *,
+    overwrite_log: List[str],
+    dry_run: bool = False,
+) -> int:
+    """Copy non-HTML source files that no node's attachment copy reaches.
+
+    A Notion export can hold sections with NO entry HTML — a page exported as a
+    PDF instead of HTML, or a folder of loose attachments. Those files belong to
+    no node, so `write_entry` never copies them and they would be dropped
+    silently. Walk every non-HTML source file and copy the ones that are not
+    already covered by a node's attachment copy.
+
+    `covered_dirs` is the set of resolved source attachment directories that a
+    node owns (each node's "<Title> <hex>/"). Any file under one of them is the
+    responsibility of that node's `write_entry` — copied to a possibly
+    collision-renamed "<Title> (id)/" dir the orphan pass could not reproduce, or
+    referenced in place under `--inplace`/`--symlink`. Either way the orphan pass
+    skips it: an exact membership test, not a structural guess, so it can neither
+    double-copy into the wrong folder nor fight the chosen attachment mode.
+
+    The copied file keeps its ORIGINAL name; only the directory components are
+    hex-stripped (via `mirror_output_dir`). Stripping the hex from the filename
+    broke body hrefs that reference the original name. But two distinct source
+    folders can still hex-strip to the SAME output dir ("Folder <hexA>/x.pdf" and
+    "Folder <hexB>/x.pdf" both → "Folder/x.pdf"), so a destination clash is
+    possible. We never silently drop: if the existing file is byte-identical it is
+    the same content (an earlier run, or a node's copy) and is skipped; if it
+    differs, the orphan is written under a disambiguated name and the clash is
+    logged. Re-runs are stable because the disambiguated name is reused when it
+    already holds an identical copy.
+
+    Returns the count of files copied (or that would be copied, in dry-run).
+    """
+    src_resolved = src.resolve()
+    claimed: Set[Path] = set()            # dests already taken this run (dry too)
+    copied = 0
+    for path in sorted(src.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() == ".html":
+            continue                      # a node → converted, not copied
+        if path.name == ".DS_Store":
+            continue                      # macOS cruft, never an attachment
+        # Skip anything a node's attachment copy already handled.
+        anc = path.parent.resolve()
+        covered = False
+        while True:
+            if anc in covered_dirs:
+                covered = True
+                break
+            if anc == src_resolved or anc.parent == anc:
+                break
+            anc = anc.parent
+        if covered:
+            continue
+        # Resolve a non-clobbering destination. A slot is "taken by a different
+        # file" if this run already claimed it, or it exists on disk with
+        # different bytes. Two source folders can hex-strip to the same output
+        # dir, so disambiguate rather than overwrite — never silently drop.
+        base = mirror_output_dir(path.parent, src, out_root) / path.name
+        dest, attempt, clashed = base, 1, False
+        while dest in claimed or (dest.exists() and not filecmp.cmp(path, dest, shallow=False)):
+            clashed = True
+            attempt += 1
+            dest = base.with_name(f"{base.stem} ({attempt}){base.suffix}")
+        if dest not in claimed and dest.exists():
+            continue                      # identical copy already on disk → done
+        claimed.add(dest)
+        copied += 1
+        if clashed:
+            overwrite_log.append(
+                f"COLLISION: orphaned file `{path.name}` mapped to an existing "
+                f"`{base.relative_to(out_root)}` holding different content; wrote "
+                f"`{dest.relative_to(out_root)}` to avoid data loss."
+            )
+        if dry_run:
+            overwrite_log.append(
+                f"WOULD COPY orphaned file `{path.name}` → `{dest.relative_to(out_root)}`."
+            )
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)
+    return copied
+
+
 def run_conversion(
     src: Path,
     out_root: Path,
@@ -1858,6 +1954,24 @@ def run_conversion(
     if pages:
         print(f"  → {pages_written} standalone page(s) written as notes")
 
+    # Copy non-HTML files that belong to no node — PDF-only export sections and
+    # loose attachments that write_entry never reaches. Without this they vanish.
+    # Files under a node's own attachment dir are already copied by write_entry
+    # (possibly into a collision-renamed dir), so exclude those dirs by exact path.
+    covered_dirs: Set[Path] = set()
+    for nd in nodes:
+        attach_dir = nd["parsed"]["path"].with_suffix("")
+        if attach_dir.is_dir():
+            covered_dirs.add(attach_dir.resolve())
+    n_orphaned = copy_orphaned_files(
+        src, out_root, covered_dirs, overwrite_log=overwrite_log, dry_run=dry_run
+    )
+    if n_orphaned:
+        print(
+            f"  → {n_orphaned} orphaned file(s) "
+            f"{'would be ' if dry_run else ''}copied (no entry HTML; preserved as attachments)"
+        )
+
     # Aggregate schema across all databases for the vault-wide artifacts.
     aggregate_schema: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
     for db in databases:
@@ -1897,6 +2011,7 @@ def run_conversion(
         "pages": pages,
         "total_entries": entries_written,
         "pages_written": pages_written,
+        "orphaned_files": n_orphaned,
         "attachment_mode": attachment_mode,
         "dry_run": dry_run,
         "warnings": total_warnings,
@@ -1924,6 +2039,11 @@ def _emit_conversion_report(
     lines.append(f"- Databases found (any depth): {len(databases)}")
     lines.append(f"- Database entries written: {total_entries}")
     lines.append(f"- Standalone pages written: {summary['pages_written']}")
+    if summary.get("orphaned_files"):
+        lines.append(
+            f"- Orphaned files {'would be ' if dry_run else ''}copied "
+            f"(non-HTML, no entry; preserved as attachments): {summary['orphaned_files']}"
+        )
     n_index = sum(1 for db in databases if db.get("index_path"))
     if n_index:
         lines.append(
