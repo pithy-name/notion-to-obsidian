@@ -199,6 +199,18 @@ deletes `MyDB.base.new` if present (and same for `<entry>.md.new`).
 Only the exact pair gets cleaned up — unrelated `.new` files are
 never touched. Each cleanup is logged.
 
+**Re-running never removes stale files or folders.** The script only
+writes (or, with `--force`, overwrites) the notes, attachments, and
+`.base` files the *current* run produces — it never deletes things a
+*previous* run made that this one doesn't. So if you rename or
+restructure the source export, delete an entry, or upgrade the script
+to a version that names things differently, the old output is left
+behind alongside the new (you can end up with both an old and a new
+copy of a renamed note or folder). `--force` does not fix this; it
+overwrites matching targets but never prunes orphans. For a guaranteed-
+clean result, convert into a **fresh, empty output folder**, or delete
+the old output folder first.
+
 ## What you get
 
 The output mirrors the export's folder structure. One `.md` per node, a
