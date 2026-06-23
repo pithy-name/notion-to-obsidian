@@ -201,24 +201,32 @@ never touched. Each cleanup is logged.
 
 ## What you get
 
+The output mirrors the export's folder structure. One `.md` per node, a
+folder-scoped `.base` per database plus a vault-wide one, and attachments
+copied alongside the note they belong to:
+
 ```
 <source name> (Obsidian)/
   .obsidian/
     types.json                 # Obsidian property-type declarations (datetime,
                                # tags, multitext, etc.) — vault-wide, merged
                                # across all discovered databases. See --no-types.
-  <DB Name>.base               # folder-scoped table view, sibling to <DB Name>/
-  _conversion_report.md        # schema, drift warnings, per-entry warnings, skipped pages
-  <DB Name>/                   # one folder per discovered database
-    Entry Title.md             # one per Notion entry
-    Entry Title/               # that entry's attachments (PDFs etc.), if any
-      file.pdf
-    Another Entry.md
-    …
-  <Another DB Name>.base       # if multiple databases were discovered
-  <Another DB Name>/
-    …
+  <source name>.base           # vault-wide table view (every note)
+  _conversion_report.md        # schema, drift warnings, per-node warnings, skipped pages
+  Animals.md                   # a database's landing/home note (embeds Animals.base, lists entries)
+  Animals.base                 # folder-scoped table view, sibling to Animals/
+  Animals/                     # one folder per database, at its real depth
+    Cat.md                     # one note per entry
+    Cat/                       # Cat's attachments AND anything Cat owns:
+      photo.png                #   - a genuine attachment
+      Breeds.base              #   - Cat owns a nested "Breeds" database…
+      Breeds/
+        Tabby.md               #   …whose entries are real notes, at any depth
+    Dog.md
 ```
+
+A standalone page (or the export's own root/landing page) becomes a note the
+same way, at the spot it occupies in the tree.
 
 Each `.md` has YAML frontmatter like:
 
@@ -261,50 +269,34 @@ body (like third-party-hosted images) are preserved verbatim as
 Markdown image/link references; whether they still load when you open
 the note is up to those external servers.
 
-## Nested databases
+## Nesting (any depth)
 
-When Notion exports a database whose entries contain inline sub-databases
-(e.g., a test-report entry that embeds a "Discoveries" tracking table),
-the sub-database entries live in a depth-2 subfolder:
+There is **no depth limit** and **no requirement that a database exist**. The
+tool converts a single page, a flat database, or databases nested inside entries
+inside databases to any depth. It walks the export recursively and reproduces
+the folder structure in the vault, so every node becomes a real note:
 
-```
-src/
-  ParentEntry UUID.html          ← top-level DB entry
-  ParentEntry UUID/              ← attachment folder (depth 1)
-    NestedDB UUID/               ← nested DB entries folder (depth 2)
-      row1.html
-      row2.html
-```
+- **Database entries** → one note each, at the depth they appear.
+- **Standalone pages** → one note each.
+- **Database index / landing pages** (Notion's `collection-content` pages,
+  including the export's own root page) → one note each.
 
-The script auto-detects these and **renders each nested database as an
-inline GFM table** appended to the parent entry's `.md` body instead of
-producing a separate output folder. Table columns are:
+When a node owns a database (a database folder sits inside that node's folder),
+that node is the database's **home**: its note embeds the database's `.base`
+(`![[<DB>.base]]`) and lists the entries as `[[wikilinks]]`, and each entry gets
+an `↑ Part of [[home]]` backlink. Wikilinks are name-based, so they survive moves
+within the vault; filenames are made vault-unique (a short Notion id is appended
+on collision).
 
-| Topic | \<Notion property columns\> | Notes |
-|---|---|---|
-| Entry title | One column per Notion property | Plain-text body of the nested entry |
+If Notion embedded a static snapshot of an owned database as an inline `<table>`
+in the owner's HTML body, that table is stripped before conversion so the output
+doesn't duplicate the generated base + links.
 
-**Depth rules:**
-- Depth 0 → top-level DB (processed normally)
-- Depth 2 → nested DB → rendered as inline table in parent entry
-- Depth ≥ 3 → fatal error: the script prints all offending folders and exits. Only one level of nesting is supported.
-
-If Notion also embedded a static snapshot of the nested DB as an inline
-`<table>` in the parent HTML body, that table is **replaced** (stripped
-before body conversion) so the output does not contain duplicates.
-
-**Known limitation:** the generated table is always appended at the end
-of the parent entry body. The original Notion inline table may have been
-mid-document (e.g., under a `## Bugs` heading). Position-preserving
-injection is a planned future improvement.
+`.base` files and `![[…]]` embeds require Obsidian 1.9+; the notes and
+`[[wikilinks]]` work in any version.
 
 ## Known limitations
 
-- **Embedded-database entries lose body content.** A nested database is
-  inlined as a GFM table; each entry's body collapses into a single
-  plain-text "Notes" cell, so images, links, and formatting within
-  nested-DB entries are dropped. (Top-level entries keep images/PDFs as
-  viewable Obsidian embeds — this affects nested-DB entries only.)
 - **Strikethrough is lost.** `~~text~~` comes through unstyled rather
   than struck.
 - **Rich-text styling is largely stripped.** Indentation and colorized
@@ -344,10 +336,12 @@ injection is a planned future improvement.
   pre-pass for cleaner output; if another block type comes out
   garbled, look at the original `.html` and we can add a similar
   pre-pass.
-- **Parent pages and standalone pages aren't converted yet.** Scope
-  is database-only. Parent pages (those with `class="collection-content"`)
-  and standalone pages are detected and listed in
-  `_conversion_report.md` but not written to `.md`.
+- **The root/landing page's body is best-effort.** A page that owns
+  databases is written as a note and becomes their home (base embeds +
+  entry links), but its own body — Notion's `collection-content` gallery
+  of those databases — is converted by markdownify as-is, so it may read
+  as a plain table or list above the generated home sections rather than a
+  polished landing page.
 
 ---
 
