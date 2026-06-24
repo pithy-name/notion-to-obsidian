@@ -4,6 +4,196 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-06-23 — preserve orphaned non-HTML files (PDF-only sections, loose attachments)
+
+Decision: a new post-pass `copy_orphaned_files` copies every non-HTML source file that no node's attachment copy reaches, so a Notion page exported as a PDF — or any loose attachment in a section with no entry HTML — lands in the vault instead of being dropped.
+Context: `discover_tree` finds entries only via `*.html`. A PDF-only export section produces no node, so `write_entry` never runs and `shutil.copytree` never fires — the files vanished with no warning. On real exports this dropped whole PDF-exported pages.
+Fix: after all nodes are written, walk every non-HTML source file and copy the ones not already handled. "Handled" is an EXACT test, not a guess: the file lives under some node's own attachment dir (`<Title> <hex>/`, collected into `covered_dirs`), which `write_entry` already copied/symlinked. Copied files keep their ORIGINAL name; only directory components are hex-stripped (via `mirror_output_dir`) — the dirs, not the filename, carry the vault's "no hex dirs" invariant.
+Collision safety: two distinct source folders can hex-strip to the same output dir (`Folder <hexA>/x.pdf` and `Folder <hexB>/x.pdf` → `Folder/x.pdf`). Rather than overwrite, the pass byte-compares — identical content is the same file (a re-run or a node's copy) and is skipped; different content is written under a disambiguated `x (2).pdf` name and the clash is logged. Re-runs are stable.
+Attachment modes: respects the chosen mode — under `--inplace`/`--symlink`, attachments are referenced in the source, so files under a node's dir are skipped in every mode (no stray real copies); true orphans, which no note references, are always copied as real files so they are not lost.
+Two adversarial reviews drove the design. An earlier attempt stripped the hex from filenames (broke body hrefs that reference the original name; collapsed two same-title PDF exports onto one path, losing one) and skipped hex-named files during the node copy (dropped genuine attachments whose names end in a 32-hex); both were reverted for the original-name + covered-dirs design. Known limitations left as-is (pre-existing or by design): a stray non-node `.html` *inside* an attachment tree is still dropped by the child-node filter; a user file coincidentally named `<x> <32hex>.html` is treated as a node; `--inplace` deliberately does not copy covered attachments into the vault.
+Tests: `Notion Database to Obsidian/test_orphaned_pdf_copy.py` (15 — root-level + nested orphans keep their original names; a loose PDF beside DB entries; covered files not duplicated; two same-stem orphans both survive; a genuine hex-named attachment keeps a resolvable href; two folders colliding after the hex-strip both survive with a stable re-run). Full suite green (143).
+
+---
+
+## 2026-06-23 — narrow the nested-DB filter to node HTML (avoid dropping real attachment folders)
+
+Decision: the rule that filters a nested database folder out of the attachment copy now fires only when the folder directly contains a Notion-NODE html (`<Entry> <hex>.html`), not any `*.html` (helper renamed `_dir_contains_html` → `_dir_contains_node_html`).
+Context: adversarial review of the earlier "filter nested database folders" fix found a data-loss false positive. That rule dropped any directory directly holding an `.html` file — including a GENUINE attachment subfolder that happens to contain a non-node html (a saved web page or HTML export the user attached). `gallery/index.html` + `gallery/photo.jpg` made the whole `gallery/` folder, `photo.jpg` and all, vanish silently. The earlier "structural, not a heuristic" claim did not hold for that rule.
+Fix: key the rule on the Notion node-id pattern. A database's entries are `<Entry> <hex>.html`, so requiring a 32-hex id in the html's stem distinguishes a real DB folder from a user attachment folder whose html carries no id — restoring the structural property and stopping the data loss. A residual ambiguity remains only for a user file coincidentally named `<x> <32hex>.html` (inherent to filename heuristics, and far rarer than the bare-`.html` surface it replaces).
+Tests: `Notion Database to Obsidian/test_copy_filters_node_content.py` — the DB-folder case now uses realistic 32-hex ids; new `test_attachment_subdir_with_non_node_html_is_kept` guards the false positive (12 cases). Full suite green.
+
+---
+
+## 2026-06-23 — filter nested database folders during attachment copy (ghost-dupe fix)
+
+Decision: `_attachment_copy_ignore` now also ignores a directory that itself contains `*.html` files (a nested database folder).
+Context: the copy-mode attachment filter skipped `*.html` files and any directory paired with a sibling `<name>.html` (a node's attachment folder), but a nested *database* folder has neither marker at its parent level: `"<DB> <hex>/"` holds its entries as `"<Entry> <hex>.html"` *inside* it, with no `"<DB> <hex>.html"` sibling next to it. So when such a DB folder sat inside another entry's source folder, `copytree` copied it wholesale — ghost-duplicating every DB entry as a raw `"<Entry> <hex>.html"` (and hex dir) beside the clean `"<Entry>.md"`. Same class of dupe the 2026-06-22 copy-filter fix addressed, for the one structural case it missed. Latent in the original filter; exposed by deeper nesting.
+Fix: add a third rule keyed on a new helper `_dir_contains_html(dir)` — a directory holding any `*.html` file directly is child-node content and is skipped. Structural to Notion's export layout, not a heuristic. `copy_has_attachments` (which decides whether to materialize the dir at all) inherits the rule, so a folder of only DB content still leaves no empty dir.
+Tests: `Notion Database to Obsidian/test_copy_filters_node_content.py` gains `test_db_folder_containing_html_entries_is_filtered` (DB folder filtered; genuine sibling attachment kept) — 11 cases total. Full suite green.
+
+---
+
+## 2026-06-23 — strip trailing space after the Notion hex id (ghost-dir fix)
+
+Decision: `NOTION_ID_RE` now allows optional trailing whitespace after the 32-char hex (`\s*` before the end-anchored lookahead).
+Context: Notion sometimes exports a folder name with a trailing space after the hex — `"<Title> <hex> "`. The old pattern `\s+([0-9a-f]{32})(?=\.html$|/$|$)` anchored the hex to end-of-string (or `.html`/`/`), so a trailing space made the lookahead fail: `strip_notion_id` returned the name with the hex still attached, and `mirror_output_dir` emitted a ghost `"<name> <hex>"` directory — the clean nested path under it was effectively dropped. Latent since the regex was introduced; exposed by the arbitrary-depth nesting feature, which mirrors every such folder into the vault.
+Fix: `r"\s+([0-9a-f]{32})\s*(?=\.html$|/$|$)"` — the `\s*` is consumed by `re.sub`, so the hex and its trailing space are removed together. Fixes both `strip_notion_id` and `extract_notion_id`.
+Tests: `Notion Database to Obsidian/test_trailing_space_hex.py` (6 — strip/extract with and without the trailing space; an integration run asserting a trailing-space container folder produces no hex dir and the entry note lands at the clean path). Full suite green.
+
+---
+
+## 2026-06-22 — red-team fixes: index/landing link resolution, force-delete safety, report wording
+
+Three fixes from an adversarial review of the landing-page + stem-naming work:
+- **Index & landing page body links now resolve.** `wikilink_map` is keyed on each node's filename (basename). An entry links to a sibling with a bare basename (direct hit), but an index/landing page links DOWN into a subfolder, so its hrefs carried a folder prefix and missed the map — leaving raw `.html` links (broken in Obsidian) in those notes. Added a basename fallback (filenames are vault-unique, so it resolves unambiguously). Entry links are unaffected.
+- **`--force` no longer deletes an output attachment dir it won't refill.** In copy mode, when an entry's source folder holds only child-node content (nothing survives the attachment filter), a `--force` run used to `rmtree` the existing output dir and copy nothing back — silently destroying any hand-added files. It now removes only when it will recreate; otherwise the existing dir is kept.
+- **Report wording:** the "index/landing pages … not yet written … in a later step" line was stale; they are written as each database's home note.
+Tests: `Notion Database to Obsidian/test_wikilink_rewrite.py` (3 — bare/folder-prefixed link resolution; non-node basename stays a non-link); `test_copy_filters_node_content.py` gains a force-keep case. Full suite green.
+Known remaining (backlogged, pre-existing — see `TODO.md`): a landing page's own linked cover image is not rewritten to its copied location (broken image link on the note). (An earlier note here about cross-database `../` links was withdrawn — that link does end in `.html` and resolves in a real export; it only appeared broken in the redacted test copy, where the redaction rendered the link text and the filename differently for the same Notion id.)
+
+---
+
+## 2026-06-22 — note names come from the source stem, not the H1 title (dupe-dir fix)
+
+Decision: `assign_unique_names` now derives each note's filename from its source stem (the `<Title> <hex>` file/folder name, hex stripped) instead of its H1 title.
+Context: Notion sanitizes the on-disk file/folder name — e.g. dropping square brackets — while the page title keeps them. `mirror_output_dir` builds the folder tree from those sanitized stems, but the note + its attachment folder were named from the title via `sanitize_filename`. When the two differed, a node split into **two sibling directories**: its children mirrored under the stem name while its attachments landed in a title-named dir. A real export with a bracketed title (e.g. title `Group [Co] Hub`, on-disk folder `Group Co Hub`) produced two top-level dirs — one with the children, one with the landing page's images. (Surfaced once the landing/root page became a note and carried both children and attachments; latent for any such node before that.)
+Fix: name nodes from `sanitize_filename(strip_notion_id(stem))` — the exact basis `mirror_output_dir` uses — so the note, its attachment dir, and its children all share one folder. The H1 title is still rendered verbatim as the body `# <title>` heading; only the filename/wikilink name changes, and only when Notion's filename sanitization differs from the title.
+Verified on a real export: one top-level dir instead of two, no sibling near-duplicate dirs, the landing note's filename matching its children's folder; still 0 raw `.html`, 0 hex dirs, 0 empty dirs (35 notes, 17 attachments).
+Known latent edge (pre-existing, not introduced here): two sibling nodes with the *same* stripped stem still split (one note gets a ` (id)` suffix while both children mirror to the same base dir — a collision `mirror_output_dir` already merges). Logged for a later pass.
+Tests: `Notion Database to Obsidian/test_title_vs_folder_naming.py` (4 cases — note named from stem; no title-named split dir; attachment + children share one dir; title preserved as the body heading). Full suite green.
+
+---
+
+## 2026-06-22 — collection/landing pages (incl. the export root) become notes
+
+Decision: a "parent" page (one with a `collection-content` table) whose hex matches no database's entries-folder is now written as a note instead of being dropped.
+Context: `classify_html` labels any `collection-content` page `parent`, and `discover_tree` only kept a parent page if it was some database's index (its hex == that database's entries-folder hex). A page that *contains* child databases rather than entry rows — most importantly the export's own root/landing page — matched nothing, so it was silently orphaned: no note, its inline images lost, and every database it owned reported "no home note found" (the owner node didn't exist). On a real export this dropped the root page and orphaned 2 images.
+Fix: `discover_tree` now folds every unconsumed `parent` page into the page list, so it becomes a `kind="page"` node. Because these pages own the databases beneath them (by hex), the existing owner→home wiring then makes each one the home for its databases — embedding their `.base`, listing `[[entry]]` links, and giving entries an `↑ Part of [[home]]` backlink. The owner's inline collection-snapshot table is already stripped before body conversion, so no duplication. Composes with the copy-attachment filter: the landing page's genuine images are copied; the child-DB HTML/folders in its folder are not.
+Verified on a real export: the root page is now a note (`.md` 34 → 35), both previously-orphaned images are recovered (attachments 15 → 17), and the two "no home note found" warnings are gone; still 0 raw `.html`, 0 hex dirs, 0 empty dirs.
+Docs: refreshed both READMEs (intro, output tree, the rewritten "Nesting (any depth)" section, removed two now-false "Known limitations") and the project `CLAUDE.md` invariants (no depth limit; per-database `.base` + vault-wide), all of which still described the superseded "nested DBs → inline tables, depth ≥ 3 fatal" model.
+Tests: `Notion Database to Obsidian/test_landing_page_notes.py` (5 cases — landing page written; its attachment copied; owned-DB entries written; landing page embeds the child base + lists entries; entries backlink to it). Full suite green.
+
+---
+
+## 2026-06-22 — copy attachment mode filters child-node content (dupe fix)
+
+Decision: in `copy` mode, copy only genuine attachments from an entry's source folder; skip the child-node tree it also contains.
+Context: on a nested export an entry's folder (`<Title> <hex>/`) holds both real attachments (images, PDFs) AND the entry's child nodes (`<Child> <hex>.html` + `<Child> <hex>/`). The default `copy` mode `shutil.copytree`'d the whole folder, so every nested node landed in the vault twice — once as the clean `<Child>.md` note, once as the raw `<Child> <hex>.html` (+ hex folder). On a real export this turned 34 source `.html` into 59 copies plus 27 stray hex-named dirs. The Piece-4 warning flagged this but the behavior shipped anyway.
+Fix: a `shutil.copytree(ignore=...)` callback (`_attachment_copy_ignore`) drops any `*.html` and any directory that has a (case-insensitive) sibling `<name>.html` (a node folder), copying only true attachments. The rule is structural to Notion's export layout, not a heuristic. The depth-duplication warning now fires for `symlink` mode only (which still exposes child nodes through the symlinked source dir); `copy` no longer warns.
+Hardened after an adversarial review: (a) the sibling-html match is case-folded, so an uppercase `<name>.HTML` from a case-preserving tool no longer leaks the node folder while filtering its html; (b) copy mode now skips `copytree` entirely when nothing survives the filter, so an entry whose folder holds only child-node content no longer leaves an empty directory in the vault (children make their own dirs in the main write loop); the force-overwrite copytree branch carries the same filter and a matching dry-run log.
+Alternatives: auto-switch nested exports to `inplace` (rejected — leaves genuine image attachments pointing back at the source export instead of copied into the vault); document `--inplace-attachments` as required (rejected — silent dupes by default). Trade-off: a stray non-node `.html` attachment (rare in Notion exports) would also be skipped; acceptable.
+Verified on a real export: output `.html` 59 → 0, hex dirs 27 → 0, empty dirs 1 → 0, `.md` count unchanged (34), all 15 genuine attachments preserved.
+Separately flagged (NOT fixed here — distinct concern, backlogged): the whole-export root/landing page is not written as a note, so its inline images (2 in this export) are orphaned. Pre-existing; present before this change too. The README intro's pre-PR description of nested DBs (inline tables, depth-3 fatal) is also stale and should be rewritten before the nesting PR merges.
+Tests: `Notion Database to Obsidian/test_copy_filters_node_content.py` (9 cases — attachment copied; no `.html`/hex-dir leak; child notes intact; uppercase-`.HTML` sibling filtered; non-node attachment dir kept; no empty dirs; force-recopy invariants). Full suite green.
+
+---
+
+## 2026-06-18 — arbitrary-depth nesting, Piece 4: edge cases + regression
+
+Decision: round out the nested-directory feature with edge-case coverage and two best-effort warnings.
+- Edge tests (`test_edge_cases.py`): page-only export (no "database required" fatal), single-entry DB, a node owning multiple child DBs (multiple base embeds + link groups), folder-missing-hex (no crash + warning), copy attachment mode on a nested export (no crash).
+- Warning: copy/symlink attachment mode on a NESTED export duplicates child-node content under deep paths → recommends `--inplace-attachments`.
+- Warning: a nested DB whose owner folder lacks a Notion id (renamed) can't be mapped → reported and treated as top-level, never silently mis-nested.
+Context: spec acceptance criteria 9/10 + "Edge cases".
+Note: broad regression is covered by the existing per-feature suite (callouts / toggles / checkboxes / highlights / code-langs / tight lists / frontmatter / attachments / url / person / property keys), all green after the Piece 2–4 refactor. Known limitation: copy/symlink modes still *duplicate* child-node content on nested exports (use `--inplace`); a copy-time content filter is a possible follow-up.
+Tests: `Notion Database to Obsidian/test_edge_cases.py` (5 cases). Full suite 98 green.
+
+---
+
+## 2026-06-18 — arbitrary-depth nesting, Piece 3: per-level bases, home notes, links & backlinks
+
+Decision: complete the nested-directory feature's linking/graph layer.
+- **Vault-unique filenames:** every note's filename is now unique across the whole vault (not just within a folder), so name-based `[[wikilinks]]` resolve unambiguously. Names are assigned deterministically (sorted by source path); a collision gets the short Notion id suffix.
+- **Per-database `.base`:** each database now gets its own same-level-scoped `.base` (`file.folder == "<mirrored path>"`) at its folder, ALONGSIDE the vault-wide base at the output root.
+- **Database "home" notes:** each database has one home note that embeds its `.base` (`![[Name.base]]`) and lists its entries as `[[links]]`; each entry carries an `↑ Part of [[home]]` backlink. The home is the owning entry/page for a nested database, or the index/landing page for a top-level database — which also means DB index/landing pages are now written as notes (audit item 68).
+- **Refactor:** `run_conversion` builds a node registry (entries + index pages + standalone pages), assigns unique names, wires homes/links/backlinks, then writes. Removed the now-superseded `process_database` and `build_wikilink_map`.
+Context: spec acceptance criteria 5/6/7 (`docs/superpowers/specs/2026-06-17-nested-directory-support-design.md`).
+Alternatives: path-qualified wikilinks (rejected — brittle on move; name-based + unique filenames is move-proof); a static child summary table instead of a base embed (rejected — embedding is documented Obsidian behavior and drives the graph). Trade-offs: a top-level database with no index page has no home (its base is written but not embedded; warned). `.base`/embeds need Obsidian 1.9+; the `.md` notes and `[[links]]` work without it. One `.base` per nested DB (proliferation — acceptable, documented).
+Tests (one feature per file): `Notion Database to Obsidian/test_per_level_bases.py`, `test_home_notes_and_backlinks.py`, `test_unique_filenames.py` (9 cases). Full suite green.
+
+---
+
+## 2026-06-18 — toggle headings keep their heading level
+
+Decision: when a Notion toggle's `<summary>` contains a heading element, convert it to a real Markdown heading (preserving the level) instead of a foldable callout. Obsidian folds real headings natively, so this keeps both the level and the fold. Plain toggles (no heading in the summary) still become expanded `> [!note]+` callouts.
+Context: divergence-audit item 5. A toggle heading previously flattened to `> [!note]+`, losing the heading level.
+Caveat: no toggle-heading sample exists in the current test library, so this targets the plausible structure (a heading element inside `<summary>`). It is a safe no-op for toggles without a heading and should be re-confirmed against a real toggle-heading export.
+Tests: `Notion Database to Obsidian/test_toggles.py::test_toggle_heading_becomes_real_markdown_heading`.
+
+---
+
+## 2026-06-18 — verified: body tables convert to GFM (audit item 21)
+
+Audit item 21 flagged body-table conversion as uncertain. Verified: an ordinary content `<table>` in a note body converts to a GFM Markdown table via markdownify. GFM has no `colspan`/`rowspan`, so merged cells are flattened (the value lands in the first column, the rest blank) — but no cell text is lost. No code change — added regression tests.
+Limitation: merged-cell *layout* is not preserved (a GFM constraint, not a data loss).
+Tests: `Notion Database to Obsidian/test_tables.py`.
+
+---
+
+## 2026-06-18 — verified: nested to-do conversion is faithful (audit item 8)
+
+Audit item 8 questioned whether the `to-do-children` wrapper span around to-do text leaves artifacts. Verified it does not: a nested to-do converts to indented `- [x]` / `- [ ]` task items with the span dropped cleanly (markdownify treats the inline span transparently). No code change — added a regression test that locks the nested-to-do output and asserts no `to-do-children` leakage.
+Tests: `Notion Database to Obsidian/test_checkboxes.py::test_nested_todo_indents_under_parent`.
+
+---
+
+## 2026-06-18 — keep embedded URLs (iframes)
+
+Decision: convert Notion embed blocks (`<iframe>` — YouTube, Maps, Figma, etc., sometimes wrapped in a `<figure>`) into a plain link to the embedded URL (`_convert_iframes`, pre-pass). markdownify drops `<iframe>` entirely, so the URL was lost; an iframe with no `src` is removed.
+Context: divergence-audit item 32. The HTML render shows the embed; Markdown has no interactive-iframe equivalent, but the destination URL must survive.
+Alternatives: try to reconstruct a provider-specific embed (rejected — out of scope, and Obsidian has no native embed for most providers). Trade-off: a live embed becomes a link, not an inline player. Latent in the current test library (0 iframes); built against the general `<iframe>` case with synthetic tests.
+Tests: `Notion Database to Obsidian/test_embeds.py` (3 cases).
+
+---
+
+## 2026-06-18 — include empty properties as null
+
+Decision: every property in a database's schema now appears in each note's YAML; a property that is empty for a given entry is emitted as `null` (previously the key was omitted entirely). The same applies to a property whose value converts to nothing (e.g. an emptied tags list).
+Context: divergence-audit item 64. Notion shows the column for every row, so omitting empty properties made the property panel inconsistent across notes and could hide a property from Bases on notes where it happens to be blank.
+Alternatives: emit empty as `""` (rejected — `null` is the natural "no value" and reads better in Bases); keep omitting (rejected — the flagged divergence). Trade-off: noisier frontmatter (a `null` line per unset property).
+Tests: `Notion Database to Obsidian/test_empty_values.py` (`EmptyProperties`).
+
+---
+
+## 2026-06-18 — show the page title as a body heading
+
+Decision: write the Notion page title as an `# H1` at the top of each note's body (in `write_entry`, after the YAML frontmatter). Notion renders the page title at the top of the page; Obsidian shows only the filename, so without this the title was absent from the note's content, previews, exported Markdown, and transclusions/embeds.
+Context: divergence-audit item 65 (`test-output/divergence-audit-2026-06-18.md`). The HTML render is the fidelity benchmark, and it shows the title prominently.
+Alternatives: rely on Obsidian's "Show inline title" (which displays the filename) only — rejected: the title then never appears in exported Markdown or in embeds of the note.
+Trade-off: with "Show inline title" enabled, the title shows twice (the inline title plus the body H1).
+Tests: `Notion Database to Obsidian/test_mirrored_processing.py::test_note_body_starts_with_title_heading`.
+
+---
+
+## 2026-06-18 — bookmarks: never drop the URL
+
+Decision: a Notion link bookmark (`<figure><a class="bookmark source">`) now always keeps its URL. Two parts: (1) when the bookmark title is present-but-EMPTY (Notion fetched no page title), fall back to the visible URL → raw href → "Link", instead of emitting an empty link that markdownify dropped — which silently produced a note with no body; (2) for a titled bookmark, also emit the URL as a visible autolink subtitle (`<url>`), matching the HTML bookmark card which shows the URL in addition to the title.
+Context: found while testing a real export — a title-less bookmark's URL vanished entirely (7 of 253 entries affected). The HTML render is the fidelity benchmark; the card shows title + description + URL, so hiding the URL behind the title link was a regression.
+Alternatives: default the link text to the URL (rejected — a fetched title is more readable; would regress ~246 titled bookmarks to raw-URL text). Trade-offs: the favicon/preview image is still dropped (decorative); the URL subtitle adds one line per titled bookmark.
+Tests: `Notion Database to Obsidian/test_bookmark_figures.py` (TDD, 6 cases).
+
+---
+
+## 2026-06-18 — present-but-empty hardening (page title, toggle summary)
+
+Decision: elements that EXIST but are empty now fall back instead of yielding an empty string (`X.get_text() if X else fallback` treated an empty `X` as truthy). (1) An empty `<h1 class="page-title">` falls back to the filename with the Notion id stripped (e.g. `Untitled`), never `""` — an empty title produced broken `[[]]` wikilinks; this also improves the title-absent case (was using the raw filename including the hex id). (2) An empty toggle `<summary>` falls back to `Toggle`.
+Context: surfaced by an audit prompted by the bookmark bug ("are there other present-vs-empty checks?"). One real untitled empty page in the test library hit the title case.
+Alternatives: none meaningful — these are guard fixes. Trade-offs: none; toggle content was never lost (cosmetic title only). Benign present-but-empty cases left as-is (callout emoji → `[!note]` fallback; `.get(href,"")` guarded by `if not href`).
+Tests: `Notion Database to Obsidian/test_empty_values.py` (TDD, 3 cases).
+
+---
+
+## 2026-06-17 — arbitrary-depth nesting, Piece 2: recursive mirrored notes
+
+Decision: replace the depth-limited pipeline (`discover_databases` + inline-table nested DBs) with a recursive, mirrored one. `main()` is now a thin argparse wrapper around a new `run_conversion(src, out_root, ...)` orchestration function; `run_conversion` walks `discover_tree` and writes one real `.md` note per node — every database entry at ANY depth and every standalone page — into an output folder that mirrors its source location, with the Notion hex id stripped from each path component (`mirror_output_dir`). Database index/landing pages are discovered (and counted in the report) but not yet written — they become each database's home note in Piece 3. `process_database` now writes into a caller-supplied mirrored folder and takes the vault-wide wikilink map. A standalone page is just an entry with no properties, so the same writer handles both (no separate page code path). Removed the now-superseded `discover_databases`, `render_nested_db_as_markdown_table`, and `_body_to_cell`.
+Context: the old ceiling aborted on databases nested deeper than depth 2 and required a top-level database to exist; nested DBs were flattened into inline GFM tables instead of becoming real notes.
+Alternatives: (a) keep DB-name-only output folders (`out/<db>/`) — rejected: loses the nesting structure and can't host per-level `.base` scoping; (b) flatten everything to one folder with path-encoded names — rejected: not graph-friendly, ugly filenames. Chose mirrored layout so the entry-note and its children-folder sit side by side (Obsidian's note+folder pattern).
+Trade-offs: copy/symlink attachment modes would `copytree` an owner's source subfolder (which now also holds child-node HTML) and duplicate the subtree — so this piece is verified with `--inplace` (rewrites hrefs, copies nothing); copy/symlink child-vs-attachment separation is deferred to Piece 4 edge work. Per-level `.base`, parent↔child wikilinks/backlinks, and vault-unique filenames are Piece 3 (not yet wired). Because output filenames are de-duplicated per database (not yet vault-wide), two entries with the same title in different mirrored folders that resolve to the same output directory can collide — the safe-write contract writes the second to a `.md.new` sibling (and would overwrite under `--force`); vault-wide unique filenames land in Piece 3. Cosmetic, pre-existing (from `main`): the `types.json` "Updated …" log line lands in the same `overwrite_log` as file-preservation events, so the summary can mislabel an additive types.json merge as "PRESERVED 1 … .new siblings" when nothing was preserved — separate fix.
+Tests: `Notion Database to Obsidian/test_mirrored_processing.py` (TDD, 8 cases: note-per-node at every depth incl. beyond the old limit, standalone pages, page-owned DB, note+folder coexistence, body-`<table>` stays a Markdown table, total count). Full suite 65 green. CLI smoke-tested (`--dry-run` writes nothing; `--inplace` produces the 10-note mirrored tree + vault-wide `.base` + `types.json`).
+
+---
+
 ## 2026-06-17 — revive Notion highlights (background color → ==)
 
 Decision: wrap inline-content `block-color-*_background` elements in `==` so they become Obsidian highlights (`_convert_highlights`, pre-pass). markdownify has no highlight/`<mark>` support, but literal `==` survives. Block-container backgrounds are skipped (avoid `==` spanning blocks); callouts are excluded (converted earlier).

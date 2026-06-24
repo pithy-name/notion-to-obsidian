@@ -30,6 +30,7 @@ Dependencies (pip install):
 from __future__ import annotations
 
 import argparse
+import filecmp
 import json
 import os
 import re
@@ -38,7 +39,7 @@ import sys
 from collections import Counter, OrderedDict, defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, unquote
 
 try:
@@ -64,8 +65,11 @@ _TAG_FACTORY = BeautifulSoup("", "html.parser")
 
 # ---- Notion ID handling ----------------------------------------------------
 
-# Notion appends a 32-char hex ID to filenames and folder names.
-NOTION_ID_RE = re.compile(r"\s+([0-9a-f]{32})(?=\.html$|/$|$)", re.IGNORECASE)
+# Notion appends a 32-char hex ID to filenames and folder names. Notion
+# sometimes leaves a trailing space after the hex on folder names ("Title <hex> "),
+# so allow optional trailing whitespace inside the match — `re.sub` then strips
+# both the hex and the trailing space, leaving a clean name.
+NOTION_ID_RE = re.compile(r"\s+([0-9a-f]{32})\s*(?=\.html$|/$|$)", re.IGNORECASE)
 # UUID form (used in <article id="..."> attributes).
 UUID_DASHED_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -122,7 +126,12 @@ def parse_entry(html_path: Path) -> Optional[Dict[str, Any]]:
 
     # Title
     title_tag = article.find("h1", class_="page-title")
-    title = title_tag.get_text(strip=True) if title_tag else html_path.stem
+    # A <h1 class="page-title"> can be present but EMPTY (an untitled Notion
+    # page). Treat empty the same as missing: fall back to the filename with the
+    # Notion id stripped, never "" — an empty title yields broken [[]] wikilinks.
+    title = title_tag.get_text(strip=True) if title_tag else ""
+    if not title:
+        title = strip_notion_id(html_path.stem).strip() or "Untitled"
 
     # UUID (article id attribute)
     article_id = article.get("id", "")
@@ -419,8 +428,15 @@ def _clean_bookmark_figures(body_tag: Tag) -> None:
             continue
         href = a.get("href", "")
         title_div = a.find("div", class_="bookmark-title")
+        href_div = a.find("div", class_="bookmark-href")
         desc_div = a.find("div", class_="bookmark-description")
-        title = title_div.get_text(strip=True) if title_div else (href or "Link")
+        # Notion often exports a bookmark-title div that is present but EMPTY
+        # (no page title was fetched for a bare-URL bookmark). Fall back to the
+        # visible URL (bookmark-href), then the raw href, then a literal — so a
+        # title-less bookmark never collapses to an empty link and drops the URL.
+        title = title_div.get_text(strip=True) if title_div else ""
+        if not title:
+            title = (href_div.get_text(strip=True) if href_div else "") or href or "Link"
         desc = desc_div.get_text(strip=True) if desc_div else ""
 
         new_p = _TAG_FACTORY.new_tag("p")
@@ -437,6 +453,18 @@ def _clean_bookmark_figures(body_tag: Tag) -> None:
             bq_p.string = desc
             bq.append(bq_p)
             replacement_nodes.append(bq)
+
+        # The HTML bookmark card displays the URL as visible text in addition to
+        # the title link. Mirror that (HTML render is the benchmark): emit the
+        # URL as a visible autolink subtitle. Skip it when the title already IS
+        # the URL (empty-title fallback) so the URL isn't duplicated.
+        url_text = (href_div.get_text(strip=True) if href_div else "") or href
+        if url_text and url_text != title:
+            url_p = _TAG_FACTORY.new_tag("p")
+            url_a = _TAG_FACTORY.new_tag("a", href=href)
+            url_a.string = url_text
+            url_p.append(url_a)
+            replacement_nodes.append(url_p)
 
         # Replace the figure with the new nodes.
         fig.replace_with(*replacement_nodes)
@@ -585,25 +613,39 @@ def _convert_toggles(body_tag: Tag) -> None:
         if details.parent is None:
             continue
         summary = details.find("summary")
-        title = summary.get_text(strip=True) if summary else "Toggle"
+        # A "toggle heading" exports with a heading element inside its <summary>.
+        # Obsidian folds real headings natively, so emit a genuine Markdown
+        # heading (preserving the level) instead of a callout that would flatten
+        # the level. A plain toggle (no heading) becomes an expanded foldable
+        # callout as before.
+        heading = summary.find(["h1", "h2", "h3", "h4", "h5", "h6"]) if summary else None
+        title = (summary.get_text(strip=True) if summary else "") or "Toggle"
         if summary is not None:
             summary.extract()
-        bq = _TAG_FACTORY.new_tag("blockquote")
-        title_p = _TAG_FACTORY.new_tag("p")
-        title_p.string = f"[!note]+ {title}".rstrip()
-        bq.append(title_p)
-        for child in list(details.contents):
-            bq.append(child.extract())
+
+        if heading is not None:
+            node = _TAG_FACTORY.new_tag(heading.name)
+            node.string = title
+            replacement = [node]
+            replacement.extend(child.extract() for child in list(details.contents))
+        else:
+            bq = _TAG_FACTORY.new_tag("blockquote")
+            title_p = _TAG_FACTORY.new_tag("p")
+            title_p.string = f"[!note]+ {title}".rstrip()
+            bq.append(title_p)
+            for child in list(details.contents):
+                bq.append(child.extract())
+            replacement = [bq]
 
         # Drop the `<ul class="toggle"><li>` wrapper when it holds only this
-        # toggle, so we don't emit a stray bullet around the callout.
+        # toggle, so we don't emit a stray bullet around the result.
         li = details.parent if details.parent.name == "li" else None
         ul = li.parent if li and li.parent and li.parent.name == "ul" \
             and any("toggle" in c for c in (li.parent.get("class") or [])) else None
         if ul is not None and len(ul.find_all("li", recursive=False)) == 1:
-            ul.replace_with(bq)
+            ul.replace_with(*replacement)
         else:
-            details.replace_with(bq)
+            details.replace_with(*replacement)
 
 
 def _convert_checkboxes(body_tag: Tag) -> None:
@@ -722,6 +764,29 @@ def _code_language(pre_tag: Tag) -> str:
     return ""
 
 
+def _convert_iframes(body_tag: Tag) -> None:
+    """
+    Notion embed blocks (YouTube, Maps, Figma, …) export as an <iframe>
+    (sometimes wrapped in a <figure>). markdownify drops <iframe> entirely,
+    losing the embedded URL. Replace each <iframe src=...> (and its wrapping
+    <figure>, if any) with a plain link to that URL so the destination is
+    preserved. An <iframe> with no usable src is removed (nothing to keep).
+    """
+    for iframe in body_tag.find_all("iframe"):
+        if iframe.parent is None:
+            continue
+        target = iframe.find_parent("figure") or iframe
+        src = (iframe.get("src") or "").strip()
+        if not src:
+            target.decompose()
+            continue
+        new_p = _TAG_FACTORY.new_tag("p")
+        link = _TAG_FACTORY.new_tag("a", href=src)
+        link.string = src
+        new_p.append(link)
+        target.replace_with(new_p)
+
+
 def convert_body(
     body_tag: Optional[Tag],
     *,
@@ -760,6 +825,10 @@ def convert_body(
     _clean_bookmark_figures(body_tag)
     _clean_source_figures(body_tag)
 
+    # Notion embed blocks (<iframe>) → a link to the embedded URL (markdownify
+    # would otherwise drop the iframe and lose the URL entirely).
+    _convert_iframes(body_tag)
+
     # Notion callouts (<figure class="callout">) → Obsidian `> [!type]` callouts.
     _convert_callouts(body_tag)
 
@@ -792,11 +861,20 @@ def convert_body(
         if decoded.startswith(("http://", "https://", "mailto:", "#")):
             continue
 
-        # Link to another entry in the same database? -> [[wikilink]].
-        # Keys in wikilink_map are decoded relative paths like "Some Title uuid.html".
-        # Checked before any attachment rewrite so .html links never become paths.
+        # Link to another node anywhere in the export -> [[wikilink]].
+        # `wikilink_map` is keyed on each node's filename (basename). An entry
+        # links to a sibling with a bare-basename href (direct match); an
+        # index/landing page links DOWN into a subfolder, so its href carries a
+        # folder prefix ("Resources abc/Aromatherapy def.html") — fall back to the
+        # basename. Filenames are vault-unique (they keep the Notion hex), so the
+        # basename resolves unambiguously. Checked before any attachment rewrite
+        # so .html links never become paths.
         if decoded in wikilink_map:
             a.replace_with(f"[[{wikilink_map[decoded]}]]")
+            continue
+        decoded_base = decoded.rsplit("/", 1)[-1]
+        if decoded_base != decoded and decoded_base in wikilink_map:
+            a.replace_with(f"[[{wikilink_map[decoded_base]}]]")
             continue
 
         # Inplace mode: prefix the relpath to the source export onto every local
@@ -948,14 +1026,20 @@ def emit_base_file(
     out_path: Path,
     schema: "OrderedDict[str, Dict[str, Any]]",
     *,
+    folder_filter: Optional[str] = None,
     force: bool,
     overwrite_log: List[str],
     dry_run: bool = False,
 ) -> None:
     """
     Write a starter .base file: table view with one column per discovered
-    property. Covers all .md files in the vault (no folder scope).
-    Disposable — user can replace via Obsidian's UI (right-click → "New base").
+    property. Disposable — user can replace via Obsidian's UI
+    (right-click → "New base").
+
+    `folder_filter` (a vault-relative folder path, forward-slashed) scopes the
+    base to files DIRECTLY in that folder via `file.folder == "<path>"`
+    (non-recursive) — used for the per-database bases. When None, the base
+    covers all `.md` files in the vault (the vault-wide base).
 
     Honors the safe-write contract: an existing `.base` file is preserved by
     default (new content lands in `<name>.base.new`); `force=True` overwrites.
@@ -963,11 +1047,11 @@ def emit_base_file(
     order = ["file.name"] + [info["key"] for info in schema.values()]
     base_doc = OrderedDict()
     # Filter: .md only — excludes attachments (PDFs etc.) in entry subfolders.
-    base_doc["filters"] = OrderedDict([
-        ("and", [
-            'file.ext == "md"',
-        ])
-    ])
+    # A per-database base additionally scopes to its own folder (non-recursive).
+    filters = ['file.ext == "md"']
+    if folder_filter is not None:
+        filters.append(f'file.folder == "{folder_filter}"')
+    base_doc["filters"] = OrderedDict([("and", filters)])
     base_doc["views"] = [
         OrderedDict([
             ("type", "table"),
@@ -1119,70 +1203,71 @@ def emit_types_json(
 # ---- Main pipeline ---------------------------------------------------------
 
 
-def build_wikilink_map(entries: List[Dict[str, Any]]) -> Dict[str, str]:
+def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
+    """`shutil.copytree` ignore callback: keep genuine attachments, drop child nodes.
+
+    On a nested export an entry's source folder ("<Title> <hex>/") holds both
+    real attachments (images, PDFs) AND the entry's child nodes — each a
+    "<Child> <hex>.html" file with an optional sibling "<Child> <hex>/" folder.
+    Those child nodes are converted to their own .md notes elsewhere, so copying
+    them here would duplicate every nested node (the reported "<name>.md" vs
+    "<name> <hex>.html" dupes). Skip them; copy only true attachments.
+
+    A name is child-node content iff it is one of:
+      - an "*.html" file (a node, converted to its own note);
+      - a directory with a sibling "<name>.html" in the same listing (the node's
+        attachment folder); or
+      - a directory that itself contains "*.html" files (a nested database
+        folder — its entries are "<Entry> <hex>.html" inside, with no
+        "<name>.html" sibling at this level).
+    All three are structural to Notion's export layout, not a heuristic guess.
+    The DB-folder case is what kept nested databases sitting inside an attachment
+    folder from being ghost-duplicated into the vault.
+
+    Genuine attachment FILES are always kept (copied with their original name so
+    the body href resolves) — even one whose name happens to end in a 32-hex id.
+    Notion pages exported as a non-HTML file ("<Title> <hex>.pdf") are also kept
+    with their original name; `copy_orphaned_files` only places the ones that no
+    node's attachment copy reaches, and never with a renamed (hex-stripped) file.
+
+    The sibling match is case-insensitive: the ".html" file test folds case, so
+    a folder paired with an uppercase "<name>.HTML" (from a case-preserving tool)
+    must be recognised too, or the node folder would leak while its html is
+    filtered.
     """
-    Build {decoded relative href → Obsidian title} so links between entries
-    in the same export resolve to [[wikilinks]] in the output.
-    """
-    m: Dict[str, str] = {}
-    for entry in entries:
-        rel = entry["path"].name  # e.g., "Title abc123…html"
-        m[unquote(rel)] = entry["title"]
-    return m
+    lower_names = {n.lower() for n in names}
+    ignored: Set[str] = set()
+    for name in names:
+        child = os.path.join(dir_path, name)
+        if name.lower().endswith(".html"):
+            ignored.add(name)
+        elif (name.lower() + ".html") in lower_names and os.path.isdir(child):
+            ignored.add(name)
+        elif os.path.isdir(child) and _dir_contains_node_html(child):
+            ignored.add(name)
+    return ignored
 
 
-def _body_to_cell(body_tag) -> str:
-    """Extract plain text from a page-body tag for use in a table cell."""
-    if body_tag is None:
-        return ""
-    text = body_tag.get_text(separator=" ", strip=True)
-    # Escape backslash first, then GFM metacharacters that render inside cells.
-    for ch in ("\\", "|", "*", "_", "`", "[", "]"):
-        text = text.replace(ch, "\\" + ch)
-    return text.replace("\n", " ").replace("\r", "")
+def _dir_contains_node_html(dir_path: str) -> bool:
+    """True if dir_path directly holds a Notion-node html ("<stem> <hex>.html").
 
-
-def render_nested_db_as_markdown_table(
-    entries: List[Dict[str, Any]],
-    schema: "OrderedDict[str, Dict[str, Any]]",
-    db_name: str,
-) -> str:
+    A nested database's entries-folder holds its entries as "<Entry> <hex>.html",
+    so a directory containing a Notion-node html (one whose stem carries a 32-hex
+    id) is that database's folder and must be skipped. Keying on the node-id
+    pattern — not on any ".html" — is deliberate: a genuine user attachment
+    subfolder can legitimately contain a non-node ".html" (a saved web page, an
+    HTML export), and filtering on bare ".html" silently dropped such folders.
     """
-    Render a nested DB's entries as a GFM markdown table under a heading.
-    Columns: entry title, all Notion property columns, then Notes (body text).
-    Pipe chars in cell values are escaped so the table stays valid.
-    """
-    if not entries or not schema:
-        return ""
-    prop_headers = list(schema.keys())
-    headers = ["Topic"] + prop_headers + ["Notes"]
-    lines: List[str] = [f"### {db_name}", ""]
-    lines.append("| " + " | ".join(headers) + " |")
-    lines.append("| " + " | ".join("---" for _ in headers) + " |")
-    for entry in entries:
-        entry_props: Dict[str, Tuple[str, Tag]] = {
-            p[0]: (p[1], p[2]) for p in entry["properties"]
-        }
-        title_cell = (entry.get("title") or "").replace("|", "\\|").replace("\n", " ")
-        row: List[str] = [title_cell]
-        for pname, info in schema.items():
-            if pname not in entry_props:
-                row.append("")
-                continue
-            _, td = entry_props[pname]
-            dominant_type = info["types"].most_common(1)[0][0]
-            value = convert_property_value(dominant_type, td)
-            if value is None:
-                cell = ""
-            elif isinstance(value, list):
-                cell = ", ".join(str(v) for v in value)
-            else:
-                cell = str(value)
-            cell = cell.replace("|", "\\|").replace("\n", " ").replace("\r", "")
-            row.append(cell)
-        row.append(_body_to_cell(entry.get("body")))
-        lines.append("| " + " | ".join(row) + " |")
-    return "\n".join(lines)
+    try:
+        entries = os.listdir(dir_path)
+    except OSError:
+        return False
+    return any(
+        e.lower().endswith(".html")
+        and os.path.isfile(os.path.join(dir_path, e))
+        and extract_notion_id(os.path.splitext(e)[0])
+        for e in entries
+    )
 
 
 def write_entry(
@@ -1192,6 +1277,9 @@ def write_entry(
     wikilink_map: Dict[str, str],
     used_filenames: Dict[str, int],
     *,
+    out_name: Optional[str] = None,
+    backlink_to: Optional[str] = None,
+    owned_dbs: Optional[List[Dict[str, Any]]] = None,
     extra_tables: Optional[List[str]] = None,
     nested_db_folder_hexes: Optional[Set[str]] = None,
     force: bool,
@@ -1223,20 +1311,24 @@ def write_entry(
     """
     warnings: List[str] = []
 
-    # Choose the output filename. Disambiguate collisions by appending the
-    # short Notion ID (last 6 hex chars) if needed.
-    base_name = sanitize_filename(entry["title"])
-    candidate = base_name
-    if base_name in used_filenames:
-        used_filenames[base_name] += 1
-        suffix = (extract_notion_id(entry["path"].name) or "")[-6:]
-        if suffix:
-            candidate = f"{base_name} ({suffix})"
-        else:
-            candidate = f"{base_name} ({used_filenames[base_name]})"
-        warnings.append(f"Filename collision on {base_name!r}, wrote as {candidate!r}")
+    # Output filename. Normally the caller pre-assigns a vault-unique `out_name`
+    # (so name-based wikilinks resolve unambiguously). Without it, fall back to
+    # per-folder collision disambiguation (append the short Notion ID).
+    if out_name is not None:
+        candidate = out_name
     else:
-        used_filenames[base_name] = 1
+        base_name = sanitize_filename(entry["title"])
+        candidate = base_name
+        if base_name in used_filenames:
+            used_filenames[base_name] += 1
+            suffix = (extract_notion_id(entry["path"].name) or "")[-6:]
+            if suffix:
+                candidate = f"{base_name} ({suffix})"
+            else:
+                candidate = f"{base_name} ({used_filenames[base_name]})"
+            warnings.append(f"Filename collision on {base_name!r}, wrote as {candidate!r}")
+        else:
+            used_filenames[base_name] = 1
 
     md_path = out_dir / f"{candidate}.md"
 
@@ -1274,14 +1366,28 @@ def write_entry(
             # copy or symlink: clean title becomes the new basename.
             new_attach_basename = candidate
             dest_attach = out_dir / candidate
+            # In copy mode, only materialize the dir if a genuine attachment
+            # survives the child-node filter. Otherwise copytree would create an
+            # empty folder: an entry's child nodes are written by the main loop
+            # (each makes its own dir), not by this copy, so a folder holding
+            # only child-node content has nothing to copy here.
+            copy_has_attachments = True
+            if attachment_mode == "copy":
+                src_names = os.listdir(src_attach_dir)
+                _ignored = _attachment_copy_ignore(str(src_attach_dir), src_names)
+                copy_has_attachments = any(nm not in _ignored for nm in src_names)
             # `is_symlink()` returns True for broken symlinks (where .exists()
             # is False), so check both to detect any existing target.
             target_exists = dest_attach.exists() or dest_attach.is_symlink()
             if target_exists:
                 if force:
                     # Remove whatever is there (file, symlink, or directory)
-                    # before recreating in the requested mode.
-                    if not dry_run:
+                    # ONLY when we're about to recreate it. In copy mode with no
+                    # genuine attachment surviving the filter there is nothing to
+                    # recopy, so the existing output dir (which may hold
+                    # hand-added files) is left untouched rather than deleted.
+                    will_recreate = attachment_mode == "symlink" or copy_has_attachments
+                    if not dry_run and will_recreate:
                         if dest_attach.is_symlink() or dest_attach.is_file():
                             dest_attach.unlink()
                         else:
@@ -1295,12 +1401,22 @@ def write_entry(
                             f"→ `{src_attach_dir.resolve()}` "
                             f"(--force, --symlink-attachments)."
                         )
-                    else:  # copy
+                    elif copy_has_attachments:  # copy
                         if not dry_run:
-                            shutil.copytree(src_attach_dir, dest_attach)
+                            shutil.copytree(
+                                src_attach_dir, dest_attach,
+                                ignore=_attachment_copy_ignore,
+                            )
                         overwrite_log.append(
                             f"{'WOULD OVERWRITE' if dry_run else 'OVERWROTE'} "
-                            f"existing attachment dir: `{dest_attach.name}/` (--force)."
+                            f"existing attachment dir: `{dest_attach.name}/` (--force; "
+                            f"child-node HTML/folders skipped)."
+                        )
+                    else:  # copy, nothing genuine survives the filter
+                        overwrite_log.append(
+                            f"{'WOULD KEEP' if dry_run else 'KEPT'} existing attachment "
+                            f"dir `{dest_attach.name}/` (--force); source has only "
+                            f"child-node content, nothing to recopy."
                         )
                 else:
                     label = "symlink" if attachment_mode == "symlink" else "dir"
@@ -1319,14 +1435,22 @@ def write_entry(
                             f"WOULD CREATE symlink `{dest_attach.name}` → "
                             f"`{src_attach_dir.resolve()}`."
                         )
-                else:  # copy
+                elif copy_has_attachments:  # copy
                     if not dry_run:
-                        shutil.copytree(src_attach_dir, dest_attach)
+                        shutil.copytree(
+                            src_attach_dir, dest_attach,
+                            ignore=_attachment_copy_ignore,
+                        )
                     if dry_run:
                         overwrite_log.append(
-                            f"WOULD COPY attachment dir `{src_attach_basename}/` "
-                            f"→ `{dest_attach.name}/`."
+                            f"WOULD COPY attachments from `{src_attach_basename}/` "
+                            f"→ `{dest_attach.name}/` (child-node HTML/folders skipped)."
                         )
+                elif dry_run:  # copy, nothing genuine survives the filter
+                    overwrite_log.append(
+                        f"WOULD SKIP attachment copy for `{src_attach_basename}/` "
+                        f"(only child-node content; no genuine attachments)."
+                    )
 
     # Build YAML frontmatter (insertion order = schema order).
     frontmatter: "OrderedDict[str, Any]" = OrderedDict()
@@ -1335,7 +1459,12 @@ def write_entry(
     # Build a quick lookup for this entry's properties.
     entry_props: Dict[str, Tuple[str, Tag]] = {p[0]: (p[1], p[2]) for p in entry["properties"]}
     for pname, info in schema.items():
+        key = info["key"]
+        # A property that is empty for THIS entry still appears in the YAML, as
+        # null — so every note carries the database's full property set (Notion
+        # shows the column for every row, and Bases stays consistent).
         if pname not in entry_props:
+            frontmatter[key] = None
             continue
         ptype, td = entry_props[pname]
         # Use the dominant type from the schema for conversion (handles drift).
@@ -1347,22 +1476,25 @@ def write_entry(
             )
         value = convert_property_value(dominant_type, td)
         if value is None:
+            frontmatter[key] = None
             continue
         # Special case: a "tags" property (matched case-insensitively, e.g.
         # Notion's "Tags") feeds Obsidian's tag system, which treats the values
         # as actual tags. Tag syntax disallows spaces, parens, etc., so
         # sanitize each value (e.g., "test plan" -> "test-plan").
-        if info["key"].lower() == "tags":
+        if key.lower() == "tags":
             if isinstance(value, list):
                 value = [t for t in (sanitize_obsidian_tag(v) for v in value) if t]
                 if not value:
+                    frontmatter[key] = None
                     continue
             elif isinstance(value, str):
                 sv = sanitize_obsidian_tag(value)
                 if not sv:
+                    frontmatter[key] = None
                     continue
                 value = [sv]
-        frontmatter[info["key"]] = value
+        frontmatter[key] = value
 
     # Strip inline snapshot tables Notion embeds for nested databases.
     if nested_db_folder_hexes and entry.get("body"):
@@ -1392,13 +1524,25 @@ def write_entry(
         for table in extra_tables:
             body_md = (body_md + "\n\n" + table) if body_md else table
 
-    # Compose
+    # Compose. The page title is emitted as a body H1: Notion renders the title
+    # at the top of the page, but Obsidian only shows the filename, so without
+    # this the title is absent from the note content, previews, and embeds.
     fm = yaml_dump_frontmatter(frontmatter)
     contents = fm
+    if contents and not contents.endswith("\n"):
+        contents += "\n"
+    contents += "\n# " + entry["title"] + "\n"
+    if backlink_to:
+        contents += "\n↑ Part of [[" + backlink_to + "]]\n"
     if body_md:
-        if contents and not contents.endswith("\n"):
-            contents += "\n"
         contents += "\n" + body_md + "\n"
+    # If this note is the "home" of one or more child databases, embed each
+    # child's .base and list its entries as wikilinks (drives the graph).
+    for od in (owned_dbs or []):
+        contents += "\n## " + od["name"] + "\n"
+        contents += "\n![[" + od["base_name"] + ".base]]\n"
+        if od.get("children"):
+            contents += "\n" + "\n".join(f"- [[{c}]]" for c in od["children"]) + "\n"
 
     actual_path = safe_write_text(
         md_path, contents,
@@ -1428,137 +1572,561 @@ def classify_html(html_path: Path) -> str:
     return "page"
 
 
-def discover_databases(
-    src: Path,
-) -> Tuple[Dict[Path, List[Path]], Dict[Path, List[Path]], List[Path], List[Path]]:
+def discover_tree(src: Path) -> Dict[str, Any]:
     """
-    Walk src recursively, classify every .html file, and group entries by
-    their immediate parent folder (= one database per folder of entries).
+    Walk `src` and build the full nesting tree at ANY depth — no depth ceiling
+    and no requirement that a database exist (supersedes the old
+    depth-limited discovery).
 
-    Databases are split by depth relative to src:
-      depth 0 → top-level DB (entries live directly in src)
-      depth 2 → nested DB (entries live in src/<attach-folder>/<nested-db-folder>)
-      depth 1, ≥3 → fatal: list all offenders and abort
+    Returns:
+        {
+          "databases": [
+            {entries_folder, entry_paths, name, hex, index_path, owner_hex, depth},
+            ...
+          ],
+          "pages": [  # standalone (non-database) pages
+            {path, name, hex, owner_hex, depth}, ...
+          ],
+        }
 
-    Returns (top_level_dbs, nested_dbs, parent_pages, standalone_pages):
-      top_level_dbs  — {entries_folder: [entry html paths]}  (depth 0)
-      nested_dbs     — {entries_folder: [entry html paths]}  (depth 2)
-      parent_pages   — list of parent-page html paths (skipped in v1)
-      standalone_pages — list of non-DB-row html paths (skipped in v1)
+    A database is a folder of entry-HTMLs. Its owner is the node (entry or page)
+    whose attachment folder — Notion names it "<Title> <32-hex>" — contains the
+    database folder, resolved by that hex. `owner_hex` is None when the database
+    or page sits directly under `src` (top level). Index/collection-content
+    pages are attached to their database as `index_path`, not treated as
+    standalone pages.
     """
-    all_dbs: Dict[Path, List[Path]] = defaultdict(list)
-    parents: List[Path] = []
-    standalones: List[Path] = []
-    for html_path in sorted(src.rglob("*.html")):
-        kind = classify_html(html_path)
+    entries_by_folder: Dict[Path, List[Path]] = defaultdict(list)
+    index_by_hex: Dict[str, Path] = {}
+    page_paths: List[Path] = []
+    for html in sorted(src.rglob("*.html")):
+        kind = classify_html(html)
         if kind == "entry":
-            all_dbs[html_path.parent].append(html_path)
+            entries_by_folder[html.parent].append(html)
         elif kind == "parent":
-            parents.append(html_path)
+            h = extract_notion_id(html.name)
+            if h:
+                index_by_hex[h] = html
         elif kind == "page":
-            standalones.append(html_path)
+            page_paths.append(html)
 
-    top_level_dbs: Dict[Path, List[Path]] = {}
-    nested_dbs: Dict[Path, List[Path]] = {}
-    too_deep: List[Tuple[Path, int]] = []
+    def owner_hex_of(path_obj: Path) -> Optional[str]:
+        parent = path_obj.parent
+        if parent == src:
+            return None
+        return extract_notion_id(parent.name)
 
-    for ef, paths in all_dbs.items():
-        depth = len(ef.relative_to(src).parts)
-        if depth == 0:
-            top_level_dbs[ef] = paths
-        elif depth == 2:
-            nested_dbs[ef] = paths
+    databases: List[Dict[str, Any]] = []
+    for ef, paths in entries_by_folder.items():
+        h = extract_notion_id(ef.name)
+        databases.append({
+            "entries_folder": ef,
+            "entry_paths": sorted(paths),
+            "name": strip_notion_id(ef.name).strip() or ef.name,
+            "hex": h,
+            "index_path": index_by_hex.get(h) if h else None,
+            "owner_hex": owner_hex_of(ef),
+            "depth": len(ef.relative_to(src).parts),
+        })
+
+    # A "parent" page (collection-content) is only a database's index when its
+    # hex matches that database's entries-folder. A parent page whose hex matches
+    # no entries-folder is a collection/landing page — typically the export root,
+    # or any hub page that contains child *databases* rather than entry rows. It
+    # still has a body and attachments and (by hex) owns the databases beneath it,
+    # so it must become a note, not be dropped. Fold these into the page list.
+    consumed_index_hexes = {db["hex"] for db in databases if db["index_path"] is not None}
+    for h, idx_path in index_by_hex.items():
+        if h not in consumed_index_hexes:
+            page_paths.append(idx_path)
+
+    pages: List[Dict[str, Any]] = []
+    for p in page_paths:
+        pages.append({
+            "path": p,
+            "name": strip_notion_id(p.stem).strip() or p.stem,
+            "hex": extract_notion_id(p.name),
+            "owner_hex": owner_hex_of(p),
+            "depth": len(p.relative_to(src).parts) - 1,
+        })
+
+    return {"databases": databases, "pages": pages}
+
+
+def assign_unique_names(nodes: List[Dict[str, Any]]) -> None:
+    """
+    Give every node a vault-unique `name` (the .md filename stem) so name-based
+    wikilinks resolve unambiguously. Nodes are processed in the given order: the
+    first claimant of a name keeps it; later collisions get the short Notion id
+    appended (or a counter when there is no id).
+
+    The name is derived from the node's **source stem** (its `<Title> <hex>.html`
+    filename, hex stripped), NOT its H1 title. Notion sanitizes the on-disk
+    file/folder name (e.g. dropping square brackets) while the title keeps the
+    original characters; `mirror_output_dir` builds the folder tree from those
+    sanitized stems, so the note must use the same basis or its note/attachment
+    folder diverges from where its children mirror (duplicate sibling dirs). The
+    title is still rendered verbatim as the note's body `# <title>` heading.
+    """
+    seen: Dict[str, int] = {}
+    for node in nodes:
+        stem = strip_notion_id(node["parsed"]["path"].stem).strip()
+        base = sanitize_filename(stem) or sanitize_filename(node["parsed"]["title"]) or "Untitled"
+        if base not in seen:
+            seen[base] = 1
+            node["name"] = base
         else:
-            too_deep.append((ef, depth))
-
-    if too_deep:
-        msg = (
-            "ERROR: databases nested too deeply — only one level of nesting "
-            "(depth 2 from src) is supported. Offending folders:\n"
-        )
-        for ef, d in too_deep:
-            msg += f"  depth {d}: {ef}\n"
-        sys.exit(msg)
-
-    return top_level_dbs, nested_dbs, parents, standalones
+            seen[base] += 1
+            sid = (extract_notion_id(node["parsed"]["path"].name) or "")[-6:]
+            node["name"] = f"{base} ({sid})" if sid else f"{base} ({seen[base]})"
 
 
-def process_database(
-    entries_folder: Path,
-    entry_paths: List[Path],
+def mirror_output_dir(src_folder: Path, src_root: Path, out_root: Path) -> Path:
+    """
+    Map a source folder to its mirrored output folder: replicate the path from
+    `src_root` to `src_folder`, stripping the Notion hex id from every
+    component. `mirror_output_dir(src_root, src_root, out)` returns `out`.
+    """
+    rel = src_folder.relative_to(src_root)
+    parts = [sanitize_filename(strip_notion_id(p).strip() or p) for p in rel.parts]
+    return out_root.joinpath(*parts)
+
+
+def copy_orphaned_files(
+    src: Path,
     out_root: Path,
-    db_name_override: Optional[str],
+    covered_dirs: Set[Path],
     *,
-    nested_tables_by_uuid: Optional[Dict[str, List[str]]] = None,
-    nested_folder_hexes_by_uuid: Optional[Dict[str, Set[str]]] = None,
-    force: bool,
     overwrite_log: List[str],
+    dry_run: bool = False,
+) -> int:
+    """Copy non-HTML source files that no node's attachment copy reaches.
+
+    A Notion export can hold sections with NO entry HTML — a page exported as a
+    PDF instead of HTML, or a folder of loose attachments. Those files belong to
+    no node, so `write_entry` never copies them and they would be dropped
+    silently. Walk every non-HTML source file and copy the ones that are not
+    already covered by a node's attachment copy.
+
+    `covered_dirs` is the set of resolved source attachment directories that a
+    node owns (each node's "<Title> <hex>/"). Any file under one of them is the
+    responsibility of that node's `write_entry` — copied to a possibly
+    collision-renamed "<Title> (id)/" dir the orphan pass could not reproduce, or
+    referenced in place under `--inplace`/`--symlink`. Either way the orphan pass
+    skips it: an exact membership test, not a structural guess, so it can neither
+    double-copy into the wrong folder nor fight the chosen attachment mode.
+
+    The copied file keeps its ORIGINAL name; only the directory components are
+    hex-stripped (via `mirror_output_dir`). Stripping the hex from the filename
+    broke body hrefs that reference the original name. But two distinct source
+    folders can still hex-strip to the SAME output dir ("Folder <hexA>/x.pdf" and
+    "Folder <hexB>/x.pdf" both → "Folder/x.pdf"), so a destination clash is
+    possible. We never silently drop: if the existing file is byte-identical it is
+    the same content (an earlier run, or a node's copy) and is skipped; if it
+    differs, the orphan is written under a disambiguated name and the clash is
+    logged. Re-runs are stable because the disambiguated name is reused when it
+    already holds an identical copy.
+
+    Returns the count of files copied (or that would be copied, in dry-run).
+    """
+    src_resolved = src.resolve()
+    claimed: Set[Path] = set()            # dests already taken this run (dry too)
+    copied = 0
+    for path in sorted(src.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() == ".html":
+            continue                      # a node → converted, not copied
+        if path.name == ".DS_Store":
+            continue                      # macOS cruft, never an attachment
+        # Skip anything a node's attachment copy already handled.
+        anc = path.parent.resolve()
+        covered = False
+        while True:
+            if anc in covered_dirs:
+                covered = True
+                break
+            if anc == src_resolved or anc.parent == anc:
+                break
+            anc = anc.parent
+        if covered:
+            continue
+        # Resolve a non-clobbering destination. A slot is "taken by a different
+        # file" if this run already claimed it, or it exists on disk with
+        # different bytes. Two source folders can hex-strip to the same output
+        # dir, so disambiguate rather than overwrite — never silently drop.
+        base = mirror_output_dir(path.parent, src, out_root) / path.name
+        dest, attempt, clashed = base, 1, False
+        while dest in claimed or (dest.exists() and not filecmp.cmp(path, dest, shallow=False)):
+            clashed = True
+            attempt += 1
+            dest = base.with_name(f"{base.stem} ({attempt}){base.suffix}")
+        if dest not in claimed and dest.exists():
+            continue                      # identical copy already on disk → done
+        claimed.add(dest)
+        copied += 1
+        if clashed:
+            overwrite_log.append(
+                f"COLLISION: orphaned file `{path.name}` mapped to an existing "
+                f"`{base.relative_to(out_root)}` holding different content; wrote "
+                f"`{dest.relative_to(out_root)}` to avoid data loss."
+            )
+        if dry_run:
+            overwrite_log.append(
+                f"WOULD COPY orphaned file `{path.name}` → `{dest.relative_to(out_root)}`."
+            )
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)
+    return copied
+
+
+def run_conversion(
+    src: Path,
+    out_root: Path,
+    *,
+    db_name: Optional[str] = None,
+    no_base: bool = False,
+    no_types: bool = False,
+    force: bool = False,
     attachment_mode: str = "copy",
     dry_run: bool = False,
-) -> Tuple[int, List[str], "OrderedDict[str, Dict[str, Any]]"]:
+) -> Dict[str, Any]:
     """
-    Process one database: parse all entries, write .md files into a
-    folder named after the database under out_root, copy attachments.
+    Convert a Notion HTML export at `src` into a mirrored Obsidian vault at
+    `out_root`. Every node — a database entry at ANY depth, a standalone page, or
+    a database index/landing page — becomes a real .md note whose output path
+    mirrors its source location (hex id stripped). No nesting-depth ceiling and
+    no requirement that a database exist.
 
-    nested_tables_by_uuid maps entry notion_uuid → list of pre-rendered
-    GFM table strings (one per nested DB owned by that entry). Passed
-    through to write_entry so tables are appended after the body.
+    Piece 3 wiring: every note gets a vault-unique filename; each database gets a
+    same-level-scoped `.base` (alongside the vault-wide one); a database's "home"
+    note embeds that base and lists `[[entry]]` links, and each entry carries an
+    `↑ Part of [[home]]` backlink. The home is the owning entry/page for a nested
+    database, or the index/landing page for a top-level database.
 
-    Returns (num_entries_written, warnings, schema). The schema is
-    returned so the caller can aggregate across databases for
-    vault-wide artifacts like `.obsidian/types.json`.
+    Returns a summary dict (counts + paths) used for the conversion report and by
+    callers/tests.
     """
-    db_name = db_name_override or strip_notion_id(entries_folder.name).strip() or entries_folder.name
+    src = Path(src).expanduser().resolve()
+    out_root = Path(out_root).expanduser().resolve()
+    if not dry_run:
+        out_root.mkdir(parents=True, exist_ok=True)
 
-    # Parse entries
-    parsed_entries: List[Dict[str, Any]] = []
-    for path in entry_paths:
-        parsed = parse_entry(path)
+    if dry_run:
+        print("==== DRY RUN — no files will be written ====")
+    print(f"Scanning {src} (recursive)...")
+    tree = discover_tree(src)
+    databases = tree["databases"]
+    pages = tree["pages"]
+
+    n_db_entries = sum(len(db["entry_paths"]) for db in databases)
+    print(
+        f"Found {n_db_entries} entr{'y' if n_db_entries == 1 else 'ies'} across "
+        f"{len(databases)} database(s) at any depth; "
+        f"{len(pages)} standalone page(s)."
+    )
+    if db_name and len(databases) > 1:
+        print(
+            f"WARNING: --db-name was given but {len(databases)} databases were "
+            "found. Ignoring --db-name; each database's name comes from its folder."
+        )
+        db_name = None
+
+    # Parse entries, build per-database schema, and resolve the mirrored folder.
+    for db in databases:
+        db["_parsed"] = [e for p in db["entry_paths"] if (e := parse_entry(p)) is not None]
+        db["schema"] = discover_schema(db["_parsed"])
+        db["out_dir"] = mirror_output_dir(db["entries_folder"], src, out_root)
+        db["base_name"] = db["out_dir"].name
+
+    # Node registry: every entry, index/landing page, and standalone page → a note.
+    nodes: List[Dict[str, Any]] = []
+    for db in databases:
+        for parsed in db["_parsed"]:
+            nodes.append({"parsed": parsed, "out_dir": db["out_dir"], "kind": "entry", "db": db})
+    for db in databases:
+        if db["index_path"] is not None:
+            parsed = parse_entry(db["index_path"])
+            if parsed is not None:
+                nodes.append({
+                    "parsed": parsed,
+                    "out_dir": mirror_output_dir(db["index_path"].parent, src, out_root),
+                    "kind": "index", "db": db,
+                })
+    for pg in pages:
+        parsed = parse_entry(pg["path"])
         if parsed is None:
             continue
-        parsed_entries.append(parsed)
-    if not parsed_entries:
-        return 0, [f"No parseable entries found in {entries_folder}"], OrderedDict()
+        nodes.append({
+            "parsed": parsed,
+            "out_dir": mirror_output_dir(pg["path"].parent, src, out_root),
+            "kind": "page", "db": None,
+        })
 
-    # Schema
-    schema = discover_schema(parsed_entries)
-    drift = warn_schema_drift(schema)
+    # Stable order → deterministic vault-unique filenames.
+    nodes.sort(key=lambda nd: str(nd["parsed"]["path"]))
+    assign_unique_names(nodes)
+    for nd in nodes:
+        nd["backlink_to"] = None
+        nd["owned_dbs"] = []
 
-    # Output paths
-    db_out_dir = out_root / db_name
-    if not dry_run:
-        db_out_dir.mkdir(parents=True, exist_ok=True)
+    # Name-based wikilink map: decoded source href filename → unique note name.
+    wikilink_map = {unquote(nd["parsed"]["path"].name): nd["name"] for nd in nodes}
+    # Resolve an owning node by the hex id in its source filename.
+    node_by_hex: Dict[str, Dict[str, Any]] = {}
+    for nd in nodes:
+        h = extract_notion_id(nd["parsed"]["path"].name)
+        if h:
+            node_by_hex[h] = nd
+    index_by_db: Dict[int, Dict[str, Any]] = {
+        id(nd["db"]): nd for nd in nodes if nd["kind"] == "index"
+    }
 
-    # Wikilinks within this DB
-    wikilink_map = build_wikilink_map(parsed_entries)
+    # Strip the inline collection-snapshot table Notion embeds in an owner's body
+    # (the child DB is rendered as its own notes / embedded base instead).
+    nested_hexes_by_owner_uuid: Dict[str, Set[str]] = defaultdict(set)
+    for db in databases:
+        if db["owner_hex"] and db["hex"]:
+            nested_hexes_by_owner_uuid[hex_to_uuid(db["owner_hex"])].add(db["hex"])
 
-    # Write each entry
-    used_filenames: Dict[str, int] = {}
-    warnings: List[str] = []
-    _nested = nested_tables_by_uuid or {}
-    _hexes = nested_folder_hexes_by_uuid or {}
-    for entry in parsed_entries:
-        tables = _nested.get(entry["notion_uuid"]) or None
-        folder_hexes = _hexes.get(entry["notion_uuid"]) or None
-        _md_path, warns = write_entry(
-            entry,
-            db_out_dir,
-            schema,
-            wikilink_map,
-            used_filenames,
-            extra_tables=tables,
+    total_warnings: List[str] = []
+    overwrite_log: List[str] = []
+    if attachment_mode == "symlink" and any(db["owner_hex"] for db in databases):
+        msg = ("symlink attachment mode on a NESTED export exposes child-node content "
+               "through the symlinked source folder; use --inplace-attachments (or the "
+               "default copy mode, which filters child nodes) for nested exports.")
+        print(f"WARNING: {msg}")
+        total_warnings.append(msg)
+
+    # Assign each database a "home" note that embeds its base + lists its entries;
+    # give every entry an `↑ Part of [[home]]` backlink.
+    for db in databases:
+        entry_nodes = [nd for nd in nodes if nd["kind"] == "entry" and nd["db"] is db]
+        child_names = [nd["name"] for nd in entry_nodes]
+        # Nesting that can't be mapped (owner folder renamed / missing its hex id)
+        # is reported, not silently mis-nested.
+        if db["owner_hex"] is None and db["entries_folder"].parent != src:
+            total_warnings.append(
+                f"database {db['name']!r}: nesting could not be mapped — its owner "
+                "folder is missing a Notion id (renamed?); treated as top-level."
+            )
+        home = node_by_hex.get(db["owner_hex"]) if db["owner_hex"] else index_by_db.get(id(db))
+        if home is None:
+            total_warnings.append(
+                f"database {db['name']!r}: no home note found; its .base is written "
+                "but not embedded (a top-level database needs an index page)."
+            )
+            continue
+        home["owned_dbs"].append({
+            "name": db["name"], "base_name": db["base_name"], "children": child_names,
+        })
+        for en in entry_nodes:
+            en["backlink_to"] = home["name"]
+
+    # Write every node.
+    entries_written = 0
+    pages_written = 0
+    for nd in nodes:
+        parsed = nd["parsed"]
+        db = nd["db"]
+        schema = db["schema"] if nd["kind"] == "entry" else OrderedDict()
+        if not dry_run:
+            nd["out_dir"].mkdir(parents=True, exist_ok=True)
+        folder_hexes = nested_hexes_by_owner_uuid.get(parsed["notion_uuid"]) or None
+        _p, warns = write_entry(
+            parsed, nd["out_dir"], schema, wikilink_map, {},
+            out_name=nd["name"], backlink_to=nd["backlink_to"], owned_dbs=nd["owned_dbs"],
             nested_db_folder_hexes=folder_hexes,
-            force=force,
-            overwrite_log=overwrite_log,
-            attachment_mode=attachment_mode,
-            dry_run=dry_run,
+            force=force, overwrite_log=overwrite_log,
+            attachment_mode=attachment_mode, dry_run=dry_run,
         )
-        warnings.extend(warns)
+        total_warnings.extend(warns)
+        if nd["kind"] == "entry":
+            entries_written += 1
+        elif nd["kind"] == "page":
+            pages_written += 1
 
-    print(f"  → {db_name}: {len(parsed_entries)} entries written to {db_out_dir.name}/")
-    for w in drift:
-        print(f"    drift {w.strip()}")
-    return len(parsed_entries), warnings, schema
+    for db in databases:
+        print(f"  → {db['name']}: {len(db['_parsed'])} entries → {db['out_dir']}")
+        for w in warn_schema_drift(db["schema"]):
+            print(f"    drift {w.strip()}")
+    if pages:
+        print(f"  → {pages_written} standalone page(s) written as notes")
+
+    # Copy non-HTML files that belong to no node — PDF-only export sections and
+    # loose attachments that write_entry never reaches. Without this they vanish.
+    # Files under a node's own attachment dir are already copied by write_entry
+    # (possibly into a collision-renamed dir), so exclude those dirs by exact path.
+    covered_dirs: Set[Path] = set()
+    for nd in nodes:
+        attach_dir = nd["parsed"]["path"].with_suffix("")
+        if attach_dir.is_dir():
+            covered_dirs.add(attach_dir.resolve())
+    n_orphaned = copy_orphaned_files(
+        src, out_root, covered_dirs, overwrite_log=overwrite_log, dry_run=dry_run
+    )
+    if n_orphaned:
+        print(
+            f"  → {n_orphaned} orphaned file(s) "
+            f"{'would be ' if dry_run else ''}copied (no entry HTML; preserved as attachments)"
+        )
+
+    # Aggregate schema across all databases for the vault-wide artifacts.
+    aggregate_schema: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+    for db in databases:
+        for pname, info in db["schema"].items():
+            if pname in aggregate_schema:
+                aggregate_schema[pname]["types"].update(info["types"])
+            else:
+                aggregate_schema[pname] = {"types": Counter(info["types"]), "key": info["key"]}
+
+    # Per-database same-level-scoped .base files + the vault-wide base.
+    if not no_base:
+        for db in databases:
+            folder_filter = db["out_dir"].relative_to(out_root).as_posix()
+            emit_base_file(
+                db["out_dir"] / f"{db['base_name']}.base",
+                db["schema"],
+                folder_filter=folder_filter,
+                force=force, overwrite_log=overwrite_log, dry_run=dry_run,
+            )
+        vault_base_name = strip_notion_id(src.name).strip() or src.name
+        emit_base_file(
+            out_root / f"{vault_base_name}.base",
+            aggregate_schema,
+            force=force, overwrite_log=overwrite_log, dry_run=dry_run,
+        )
+
+    if not no_types:
+        emit_types_json(
+            out_root, aggregate_schema,
+            force=force, overwrite_log=overwrite_log, dry_run=dry_run,
+        )
+
+    summary = {
+        "src": src,
+        "out_root": out_root,
+        "databases": databases,
+        "pages": pages,
+        "total_entries": entries_written,
+        "pages_written": pages_written,
+        "orphaned_files": n_orphaned,
+        "attachment_mode": attachment_mode,
+        "dry_run": dry_run,
+        "warnings": total_warnings,
+        "overwrite_log": overwrite_log,
+    }
+    _emit_conversion_report(summary, src, out_root)
+    return summary
+
+
+def _emit_conversion_report(
+    summary: Dict[str, Any], src: Path, out_root: Path
+) -> None:
+    """Write `_conversion_report.md` at the output root (or print in dry-run)."""
+    databases = summary["databases"]
+    pages = summary["pages"]
+    total_entries = summary["total_entries"]
+    attachment_mode = summary["attachment_mode"]
+    dry_run = summary["dry_run"]
+    total_warnings = summary["warnings"]
+    overwrite_log = summary["overwrite_log"]
+
+    lines = ["# Conversion report" + (" (DRY RUN)" if dry_run else ""), ""]
+    lines.append(f"- Source: `{src}`")
+    lines.append(f"- Output: `{out_root}`")
+    lines.append(f"- Databases found (any depth): {len(databases)}")
+    lines.append(f"- Database entries written: {total_entries}")
+    lines.append(f"- Standalone pages written: {summary['pages_written']}")
+    if summary.get("orphaned_files"):
+        lines.append(
+            f"- Orphaned files {'would be ' if dry_run else ''}copied "
+            f"(non-HTML, no entry; preserved as attachments): {summary['orphaned_files']}"
+        )
+    n_index = sum(1 for db in databases if db.get("index_path"))
+    if n_index:
+        lines.append(
+            f"- Database index/landing pages discovered: {n_index} "
+            "(written as notes — each is its database's home note: it embeds the "
+            "`.base` and lists the entries)"
+        )
+    lines.append(f"- Attachment mode: `{attachment_mode}`")
+    if attachment_mode in ("symlink", "inplace"):
+        lines.append(
+            "  - **NOTE:** This mode is filesystem-level tested but its "
+            "Obsidian rendering is not yet verified. New md hrefs depend on the "
+            "source attachment dirs staying put; if you later move or delete the "
+            "source export, embedded files will break."
+        )
+    for db in databases:
+        mirrored = mirror_output_dir(db["entries_folder"], src, out_root)
+        rel = mirrored.relative_to(out_root)
+        lines.append(
+            f"  - **{db['name']}** ({len(db['entry_paths'])} entries) "
+            f"→ `{rel}/` (depth {db['depth']})"
+        )
+    if pages:
+        lines.append(f"- Standalone pages: {len(pages)}")
+        for pg in pages[:20]:
+            lines.append(f"  - `{pg['name']}`")
+        if len(pages) > 20:
+            lines.append(f"  - …and {len(pages) - 20} more")
+    if total_warnings:
+        lines.append("")
+        lines.append("## Per-entry warnings")
+        for w in total_warnings:
+            lines.append(f"- {w}")
+    if overwrite_log:
+        lines.append("")
+        if dry_run:
+            lines.append("## Planned operations")
+            lines.append("")
+            lines.append(
+                "All filesystem operations the script would perform if you "
+                "re-ran without `--dry-run`. Nothing has been written."
+            )
+            lines.append("")
+        elif any(w.startswith("OVERWROTE") for w in overwrite_log):
+            lines.append("## Overwrites (--force)")
+        else:
+            lines.append("## Skipped overwrites (existing files preserved)")
+            lines.append("")
+            lines.append(
+                "The output folder already contained one or more `.base` or "
+                "`.md` files. To preserve any hand-edits, the new content was "
+                "written next to the existing files with a `.new` suffix. Diff "
+                "and merge by hand, or re-run with `--force` to overwrite."
+            )
+            lines.append("")
+        for w in overwrite_log:
+            lines.append(f"- {w}")
+
+    if dry_run:
+        print("")
+        print("\n".join(lines))
+        print("")
+        print(f"DRY RUN complete. Planned output: {out_root}")
+        print(
+            f"  {total_entries} entries across {len(databases)} database(s) "
+            f"and {summary['pages_written']} page(s) would be written."
+        )
+        print(f"  Attachment mode: {attachment_mode}")
+        print("  No files were written; --dry-run was set.")
+    else:
+        report = out_root / "_conversion_report.md"
+        report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"Wrote report: {report}")
+        print(f"Output: {out_root}")
+        if overwrite_log:
+            if any(w.startswith("OVERWROTE") for w in overwrite_log):
+                print(f"  Overwrote {len(overwrite_log)} existing file(s) (--force).")
+            else:
+                print(
+                    f"  PRESERVED {len(overwrite_log)} existing file(s); new content "
+                    f"written to .new siblings. See _conversion_report.md."
+                )
+    print("Done.")
 
 
 def main() -> int:
@@ -1669,8 +2237,6 @@ def main() -> int:
     else:
         attachment_mode = "copy"
 
-    dry_run = args.dry_run
-
     src = Path(args.input_path).expanduser().resolve()
     if not src.is_dir():
         sys.exit(f"ERROR: {src} is not a directory.")
@@ -1680,215 +2246,17 @@ def main() -> int:
         if args.output
         else src.parent / f"{src.name} (Obsidian)"
     )
-    if not dry_run:
-        out_root.mkdir(parents=True, exist_ok=True)
 
-    if dry_run:
-        print("==== DRY RUN — no files will be written ====")
-    print(f"Scanning {src} (recursive)...")
-    top_level_dbs, nested_dbs, parents, standalones = discover_databases(src)
-
-    n_top_entries = sum(len(v) for v in top_level_dbs.values())
-    n_nested_entries = sum(len(v) for v in nested_dbs.values())
-    print(
-        f"Found {n_top_entries} entries across "
-        f"{len(top_level_dbs)} top-level database(s)"
-        + (
-            f"; {n_nested_entries} entries across "
-            f"{len(nested_dbs)} nested database(s) will become inline tables"
-            if nested_dbs else ""
-        )
-        + f"; {len(parents)} parent page(s) "
-        f"and {len(standalones)} non-DB page(s) skipped (out of scope for v1)."
+    run_conversion(
+        src,
+        out_root,
+        db_name=args.db_name,
+        no_base=args.no_base,
+        no_types=args.no_types,
+        force=args.force,
+        attachment_mode=attachment_mode,
+        dry_run=args.dry_run,
     )
-
-    if not top_level_dbs:
-        sys.exit(
-            "ERROR: no top-level database entries found. An entry HTML must contain "
-            '<table class="properties"> in its <header>. Did you point at the '
-            "right folder? It can be the export root, an entries folder, or "
-            "anything in between."
-        )
-
-    if args.db_name and len(top_level_dbs) > 1:
-        print(
-            f"WARNING: --db-name was given but {len(top_level_dbs)} top-level databases "
-            "were found. Ignoring --db-name; will derive each database's name from its folder."
-        )
-        args.db_name = None
-
-    # Pre-process nested databases: parse entries, build per-DB schema,
-    # render as GFM tables, key by the parent top-level entry's notion_uuid.
-    # Also collect the nested folder hex IDs so write_entry can strip the
-    # inline snapshot tables that Notion embeds in the parent body HTML.
-    nested_tables_by_uuid: Dict[str, List[str]] = defaultdict(list)
-    nested_folder_hexes_by_parent_uuid: Dict[str, Set[str]] = defaultdict(set)
-    for nested_folder, nested_paths in nested_dbs.items():
-        attach_folder = nested_folder.parent
-        parent_hex = extract_notion_id(attach_folder.name)
-        if parent_hex is None:
-            print(
-                f"  WARNING: no Notion ID in folder name {attach_folder.name!r}; "
-                f"skipping nested DB {nested_folder.name!r}"
-            )
-            continue
-        parent_uuid = hex_to_uuid(parent_hex)
-        nested_hex = extract_notion_id(nested_folder.name)
-        if nested_hex is None:
-            print(
-                f"  WARNING: no Notion ID in nested folder name {nested_folder.name!r}; "
-                f"skipping (cannot strip body snapshot table without hex ID)"
-            )
-            continue
-        nested_folder_hexes_by_parent_uuid[parent_uuid].add(nested_hex)
-        nested_entries = [e for p in nested_paths if (e := parse_entry(p)) is not None]
-        if not nested_entries:
-            continue
-        nested_schema = discover_schema(nested_entries)
-        db_display = strip_notion_id(nested_folder.name).strip() or nested_folder.name
-        table_md = render_nested_db_as_markdown_table(nested_entries, nested_schema, db_display)
-        if table_md:
-            nested_tables_by_uuid[parent_uuid].append(table_md)
-
-    total_entries = 0
-    total_warnings: List[str] = []
-    overwrite_log: List[str] = []
-    # Aggregate schema across all top-level databases so a single vault-wide
-    # types.json captures every property the user might Bases-filter on.
-    aggregate_schema: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    for entries_folder, entry_paths in top_level_dbs.items():
-        n, warns, db_schema = process_database(
-            entries_folder,
-            entry_paths,
-            out_root,
-            args.db_name if len(top_level_dbs) == 1 else None,
-            nested_tables_by_uuid=nested_tables_by_uuid,
-            nested_folder_hexes_by_uuid=nested_folder_hexes_by_parent_uuid,
-            force=args.force,
-            overwrite_log=overwrite_log,
-            attachment_mode=attachment_mode,
-            dry_run=dry_run,
-        )
-        total_entries += n
-        total_warnings.extend(warns)
-        # Merge: first-seen properties keep their position; conflicting
-        # types accumulate into the per-property Counter so dominant-type
-        # logic still applies vault-wide.
-        for pname, info in db_schema.items():
-            if pname in aggregate_schema:
-                aggregate_schema[pname]["types"].update(info["types"])
-            else:
-                aggregate_schema[pname] = {
-                    "types": Counter(info["types"]),
-                    "key": info["key"],
-                }
-
-    # Single vault-wide .base covering all entries across all databases.
-    if not args.no_base:
-        vault_base_name = strip_notion_id(src.name).strip() or src.name
-        emit_base_file(
-            out_root / f"{vault_base_name}.base",
-            aggregate_schema,
-            force=args.force, overwrite_log=overwrite_log, dry_run=dry_run,
-        )
-
-    # Emit/merge .obsidian/types.json so Obsidian Bases types each
-    # property correctly (especially date/datetime, which Bases will
-    # otherwise read as plain text).
-    if not args.no_types:
-        emit_types_json(
-            out_root, aggregate_schema,
-            force=args.force, overwrite_log=overwrite_log, dry_run=dry_run,
-        )
-
-    # Conversion report at the output root (or printed to stdout in dry-run).
-    report = out_root / "_conversion_report.md"
-    lines = [
-        "# Conversion report" + (" (DRY RUN)" if dry_run else ""),
-        "",
-    ]
-    lines.append(f"- Source: `{src}`")
-    lines.append(f"- Output: `{out_root}`")
-    lines.append(f"- Total entries written: {total_entries}")
-    lines.append(f"- Top-level databases found: {len(top_level_dbs)}")
-    lines.append(f"- Nested databases (inlined as tables): {len(nested_dbs)}")
-    lines.append(f"- Attachment mode: `{attachment_mode}`")
-    if attachment_mode in ("symlink", "inplace"):
-        lines.append(
-            "  - **NOTE:** This mode is filesystem-level tested but its "
-            "Obsidian rendering is not yet verified. The new md hrefs "
-            "depend on the source attachment dirs staying at their current "
-            "absolute path (symlink) or relative path from the output "
-            "(inplace). If you later move or delete the source export, "
-            "embedded PDFs and images will break. Spot-check one entry "
-            "in Obsidian before relying on this mode at scale."
-        )
-    for entries_folder in top_level_dbs:
-        db_name = strip_notion_id(entries_folder.name).strip() or entries_folder.name
-        lines.append(f"  - **{db_name}** ({len(top_level_dbs[entries_folder])} entries) — `{entries_folder}`")
-    if parents:
-        lines.append(f"- Parent pages skipped: {len(parents)}")
-        for p_path in parents[:20]:
-            lines.append(f"  - `{p_path.name}`")
-        if len(parents) > 20:
-            lines.append(f"  - …and {len(parents) - 20} more")
-    if standalones:
-        lines.append(f"- Standalone (non-DB) pages skipped: {len(standalones)}")
-        for sp in standalones[:20]:
-            lines.append(f"  - `{sp.name}`")
-        if len(standalones) > 20:
-            lines.append(f"  - …and {len(standalones) - 20} more")
-    if total_warnings:
-        lines.append("")
-        lines.append("## Per-entry warnings")
-        for w in total_warnings:
-            lines.append(f"- {w}")
-    if overwrite_log:
-        lines.append("")
-        if dry_run:
-            lines.append("## Planned operations")
-            lines.append("")
-            lines.append(
-                "All filesystem operations the script would perform if you "
-                "re-ran without `--dry-run`. Nothing has been written."
-            )
-            lines.append("")
-        elif args.force:
-            lines.append("## Overwrites (--force)")
-        else:
-            lines.append("## Skipped overwrites (existing files preserved)")
-            lines.append("")
-            lines.append(
-                "The output folder already contained one or more `.base` or "
-                "`.md` files. To preserve any hand-edits, the new content was "
-                "written next to the existing files with a `.new` suffix. "
-                "Diff and merge by hand, or re-run with `--force` to overwrite."
-            )
-            lines.append("")
-        for w in overwrite_log:
-            lines.append(f"- {w}")
-    if dry_run:
-        # Dump the planned report to stdout instead of writing to disk.
-        print("")
-        print("\n".join(lines))
-        print("")
-        print(f"DRY RUN complete. Planned output: {out_root}")
-        print(f"  {total_entries} entries would be written across {len(top_level_dbs)} top-level database(s), {len(nested_dbs)} nested DB(s) inlined as tables.")
-        print(f"  Attachment mode: {attachment_mode}")
-        print("  No files were written; --dry-run was set.")
-    else:
-        report.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print(f"Wrote report: {report}")
-        print(f"Output: {out_root}")
-        if overwrite_log:
-            if args.force:
-                print(f"  Overwrote {len(overwrite_log)} existing file(s) (--force).")
-            else:
-                print(
-                    f"  PRESERVED {len(overwrite_log)} existing file(s); new content "
-                    f"written to .new siblings. See _conversion_report.md."
-                )
-    print("Done.")
     return 0
 
 

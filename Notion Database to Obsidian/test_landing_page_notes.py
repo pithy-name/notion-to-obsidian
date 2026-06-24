@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""
+A collection/landing page that owns databases but is not itself a database's
+index becomes a real note.
+
+Notion's export root (and any "hub" page) is a page WITH a collection-content
+table — so it classifies as a database parent — yet its own folder holds child
+*databases*, not entry HTMLs. Its hex therefore matches no entries-folder, so it
+was silently dropped: no note, its inline images orphaned, and every database it
+owns reported "no home note found".
+
+Such a page must be written as a note: its attachments copied, and (because it
+owns the top-level databases) it becomes their home — embedding each child
+`.base` and listing entry `[[wikilinks]]`, with each entry backlinking to it.
+
+Run: /usr/bin/python3 test_landing_page_notes.py
+"""
+import tempfile
+import unittest
+from pathlib import Path
+
+import synthetic_export as se
+import notion_db_to_obsidian as n
+
+
+class LandingPageBecomesNote(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        tmp = Path(self._td.name)
+        self.src, self.out = tmp / "src", tmp / "out"
+        self.src.mkdir(parents=True)
+        # Top-level landing page "Hub": collection-content => classified 'parent'.
+        se._write(self.src / f"{se.folder('Hub')}.html", se._index_html("Hub"))
+        hub_dir = self.src / se.folder("Hub")
+        hub_dir.mkdir(parents=True, exist_ok=True)
+        # A genuine attachment that belongs to the landing page.
+        (hub_dir / "logo.png").write_bytes(b"\x89PNG fake bytes")
+        # Hub owns a database "Stuff" (its entries live inside Hub's folder).
+        se._db(hub_dir, "Stuff", [
+            ("Item A", [("X", "select", "1")], ""),
+            ("Item B", [("X", "select", "2")], ""),
+        ])
+        n.run_conversion(self.src, self.out)  # default copy
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_landing_page_is_written_as_a_note(self):
+        self.assertTrue((self.out / "Hub.md").is_file())
+
+    def test_landing_page_attachment_is_copied(self):
+        self.assertTrue((self.out / "Hub" / "logo.png").is_file())
+
+    def test_owned_database_entries_still_written(self):
+        self.assertTrue((self.out / "Hub" / "Stuff" / "Item A.md").is_file())
+        self.assertTrue((self.out / "Hub" / "Stuff" / "Item B.md").is_file())
+
+    def test_landing_page_is_home_for_its_database(self):
+        # It owns "Stuff" → embeds the base and lists the entries.
+        text = (self.out / "Hub.md").read_text(encoding="utf-8")
+        self.assertIn("![[Stuff.base]]", text)
+        self.assertIn("[[Item A]]", text)
+
+    def test_owned_entries_backlink_to_landing_page(self):
+        text = (self.out / "Hub" / "Stuff" / "Item A.md").read_text(encoding="utf-8")
+        self.assertIn("[[Hub]]", text)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

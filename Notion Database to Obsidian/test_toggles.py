@@ -66,6 +66,15 @@ class Toggles(unittest.TestCase):
         self.assertIn("- Parent", md)
         self.assertIn("> [!note]+ Child toggle", md)
 
+    def test_toggle_heading_becomes_real_markdown_heading(self):
+        # Audit item 5: a toggle whose summary IS a heading keeps its heading
+        # level as a real Markdown heading (Obsidian folds headings natively),
+        # rather than flattening to a callout that loses the level.
+        md = conv('<details><summary><h3>Section</h3></summary><p>body text</p></details>')
+        self.assertIn("### Section", md)
+        self.assertIn("body text", md)
+        self.assertNotIn("[!note]", md)  # a real heading, not a callout
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

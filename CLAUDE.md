@@ -49,8 +49,8 @@ legacy/                        # older CSV-merge scripts + README
 
 - **Zero network access.** The script never fetches URLs. Any change that introduces network calls is a breaking policy change — call it out explicitly.
 - **No CSV.** HTML export only. Notion's HTML encodes property types; CSV does not.
-- **Single vault-wide `.base`** at the output root. Not one per database.
-- **Depth rule:** depth-0 folders → top-level DBs; depth-2 → nested DBs (inline tables); depth ≥ 3 → `sys.exit` with offender list.
+- **`.base` files:** one folder-scoped `.base` per database (`file.folder == "<path>"`) **plus** a vault-wide `.base` at the output root.
+- **No depth limit, no database required.** Every node (database entry at any depth, standalone page, and database index/landing page — including the export root) becomes its own note in a folder layout that mirrors the export. A node that owns a database is that database's "home" (embeds its `.base`, lists `[[entry]]` links; entries backlink `↑ Part of [[home]]`).
 
 ## Before committing script changes
 
