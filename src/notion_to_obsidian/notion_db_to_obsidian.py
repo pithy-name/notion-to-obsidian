@@ -810,7 +810,12 @@ def _code_language(pre_tag: Tag) -> str:
     return ""
 
 
-def _convert_equations(body_tag: Tag) -> None:
+def _convert_equations(
+    body_tag: Tag,
+    equation_map: Dict[str, str],
+    *,
+    warnings: Optional[List[str]] = None,
+) -> None:
     """
     Convert Notion equation blocks into fenced LaTeX Obsidian renders natively.
 
@@ -830,15 +835,39 @@ def _convert_equations(body_tag: Tag) -> None:
     export sample) is treated as inline and wrapped `$tex$` — a best-effort
     fallback so an inline equation is never silently dropped even if its
     exact wrapper markup differs from what's assumed here.
+
+    B7 (escaping): the raw `$$tex$$` / `$tex$` text cannot be inserted
+    directly into the soup — the WHOLE body still goes through markdownify
+    afterward, which backslash-escapes markdown-special characters in every
+    text node (`_` and `*` are common in LaTeX: `$$x\\_i \\* c$$`), corrupting
+    the equation. Instead, insert an opaque alphanumeric placeholder (no
+    markdown-special characters, so markdownify passes it through
+    unescaped) and record placeholder -> raw LaTeX in `equation_map`; the
+    caller substitutes the raw text back into the markdown AFTER
+    markdownify has run.
+
+    An equation node with empty/missing TeX is dropped (nothing to preserve)
+    but that is a silent-failure risk if unreported, so a line is appended to
+    `warnings` (when given) for every dropped equation.
     """
+    def _placeholder() -> str:
+        return f"NOTIONEQPLACEHOLDER{len(equation_map)}ENDPLACEHOLDER"
+
     for fig in body_tag.find_all("figure", class_=lambda c: c and "equation" in c):
         annotation = fig.find("annotation", attrs={"encoding": "application/x-tex"})
         tex = (annotation.get_text(strip=True) if annotation else fig.get_text(strip=True))
         if not tex:
+            if warnings is not None:
+                warnings.append(
+                    "dropped a block equation with empty/missing TeX annotation "
+                    "(nothing to preserve)."
+                )
             fig.decompose()
             continue
+        placeholder = _placeholder()
+        equation_map[placeholder] = f"$${tex}$$"
         new_p = _TAG_FACTORY.new_tag("p")
-        new_p.string = f"$${tex}$$"
+        new_p.string = placeholder
         fig.replace_with(new_p)
 
     # Any TeX annotation not already consumed by the block-equation pass
@@ -847,10 +876,17 @@ def _convert_equations(body_tag: Tag) -> None:
     for annotation in body_tag.find_all("annotation", attrs={"encoding": "application/x-tex"}):
         tex = annotation.get_text(strip=True)
         if not tex:
+            if warnings is not None:
+                warnings.append(
+                    "dropped an inline equation annotation with empty TeX "
+                    "(nothing to preserve)."
+                )
             annotation.decompose()
             continue
+        placeholder = _placeholder()
+        equation_map[placeholder] = f"${tex}$"
         wrapper = annotation.find_parent(["math", "span"]) or annotation
-        wrapper.replace_with(NavigableString(f"${tex}$"))
+        wrapper.replace_with(NavigableString(placeholder))
 
 
 def _convert_iframes(body_tag: Tag) -> None:
@@ -924,8 +960,12 @@ def convert_body(
 
     # Notion equations (<figure class="equation"> / inline TeX annotations) →
     # fenced LaTeX ($$...$$ / $...$) Obsidian renders natively (B7 — markdownify
-    # otherwise drops them entirely).
-    _convert_equations(body_tag)
+    # otherwise drops them entirely). Raw LaTeX is placeholder-protected here
+    # and substituted back in after markdownify runs (see equation_map below;
+    # markdownify backslash-escapes `_`/`*`, which are common in LaTeX, so the
+    # raw text cannot survive a direct insertion into the soup).
+    equation_map: Dict[str, str] = {}
+    _convert_equations(body_tag, equation_map, warnings=warnings)
 
     # Notion embed blocks (<iframe>) → a link to the embedded URL (markdownify
     # would otherwise drop the iframe and lose the URL entirely).
@@ -1050,6 +1090,10 @@ def convert_body(
         bullets="-",
         code_language_callback=_code_language,
     )
+    # B7: substitute the raw LaTeX back in now that markdownify (which would
+    # have backslash-escaped `_`/`*` inside it) has already run.
+    for placeholder, raw_tex in equation_map.items():
+        md = md.replace(placeholder, raw_tex)
     # Clean up extra blank lines markdownify can leave behind.
     md = re.sub(r"\n{3,}", "\n\n", md).strip()
     return md
