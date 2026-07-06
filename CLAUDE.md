@@ -18,8 +18,15 @@ Project memory (user preferences, conventions, the git-rewriting procedure, prio
 ## Directory layout
 
 ```
-Notion Database to Obsidian/   # main script + utility script + README
-legacy/                        # older CSV-merge scripts + README
+pyproject.toml                        # pip package: notion-to-obsidian (src-layout)
+src/notion_to_obsidian/
+  __init__.py                         # exports run_conversion
+  notion_db_to_obsidian.py            # main script — library entry point + CLI (console script: notion2obsidian)
+  fix_frontmatter_dates.py            # maintenance utility (console script: notion2obsidian-fix-dates)
+  synthetic_export.py                 # builds synthetic HTML export fixtures for tests
+  README.md
+  tests/                              # all test_*.py (+ tests/__init__.py sys.path shim)
+legacy/                               # older CSV-merge scripts + README — NOT packaged/importable
 ```
 
 ## Git history rewriting
@@ -36,14 +43,14 @@ legacy/                        # older CSV-merge scripts + README
 ## Documentation
 
 - **`CHANGELOG.md`** (repo root) — update with every significant decision. Each entry needs: decision, context, alternatives considered, trade-offs. Dates come from git; don't guess.
-- **`README.md`** (repo root) and **`Notion Database to Obsidian/README.md`** — update only when CLI flags, output structure, or user-visible behavior changes. Do not append update chains; those live in CHANGELOG.md. Do not embed session IDs, "maintenance note for Claude" blocks, or any Claude-internal metadata in READMEs — those belong in CLAUDE.md.
+- **`README.md`** (repo root) and **`src/notion_to_obsidian/README.md`** — update only when CLI flags, output structure, or user-visible behavior changes. Do not append update chains; those live in CHANGELOG.md. Do not embed session IDs, "maintenance note for Claude" blocks, or any Claude-internal metadata in READMEs — those belong in CLAUDE.md.
 
 ## Python environment
 
 - Working runtime: `/usr/bin/python3` (Python 3.9, has `beautifulsoup4` installed at `~/Library/Python/3.9/`).
 - `python3` in PATH resolves to Homebrew Python 3.14, which does **not** have `beautifulsoup4`. Do not use it.
-- No venv currently. If adding one, use `/usr/bin/python3 -m venv .venv`.
-- Dependencies: `beautifulsoup4`, `markdownify`, `pyyaml`.
+- **Packaged (pip-installable) since the src-layout move.** For a fresh dev/test venv against the console scripts: `/usr/bin/python3 -m venv .venv-dev && .venv-dev/bin/pip install --upgrade pip && .venv-dev/bin/pip install -e .` (older pip versions need the upgrade step for a PEP 517 editable install). This gets you `notion2obsidian` / `notion2obsidian-fix-dates` on `.venv-dev/bin/` and `import notion_to_obsidian` working. Any `.venv*` dir is gitignored — never commit one.
+- Dependencies: `beautifulsoup4`, `markdownify`, `pyyaml` (floors pinned in `pyproject.toml`; installed-and-tested-against versions are 4.14.3 / 1.2.2 / 6.0.3 — check with `/usr/bin/python3 -m pip show <name>` before assuming a floor is still accurate).
 
 ## Project invariants
 
@@ -54,13 +61,18 @@ legacy/                        # older CSV-merge scripts + README
 
 ## Before committing script changes
 
-1. Run `--dry-run` against a local HTML export and confirm entry/DB counts look right:
+1. Run the test suite from repo root:
    ```bash
-   /usr/bin/python3 "Notion Database to Obsidian/notion_db_to_obsidian.py" \
+   PYTHONPATH=src /usr/bin/python3 -m unittest discover \
+     -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
+   ```
+2. Run `--dry-run` against a local HTML export and confirm entry/DB counts look right:
+   ```bash
+   /usr/bin/python3 src/notion_to_obsidian/notion_db_to_obsidian.py \
      "<path-to-html-export>" --dry-run
    ```
-2. If the change touches nested DB rendering or body conversion, spot-check a nested-DB entry in the test output.
-3. Update `CHANGELOG.md` if the change involves a non-obvious decision.
+3. If the change touches nested DB rendering or body conversion, spot-check a nested-DB entry in the test output.
+4. Update `CHANGELOG.md` if the change involves a non-obvious decision.
 
 ## Key architecture notes
 
