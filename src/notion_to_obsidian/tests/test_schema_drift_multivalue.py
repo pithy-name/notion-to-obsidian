@@ -48,6 +48,17 @@ class SchemaDriftMultivalue(unittest.TestCase):
         self.assertEqual(value, "Red")
 
     def test_write_entry_preserves_drifted_multivalue_and_warns(self):
+        # Coverage note: this test's live guard today is F3's write_entry-
+        # level multi-span detection (the `multi_spans` check ahead of the
+        # dominant_type dispatch in write_entry) — dominant_type here is
+        # "select", which convert_property_value's own B8 guard also
+        # handles, but write_entry's F3 check fires first and is what this
+        # test actually exercises end to end. The solo B8
+        # convert_property_value guard (dominant "select"/"status" with 2+
+        # selected-value spans, independent of write_entry) is covered
+        # separately by
+        # test_convert_property_value_preserves_all_values_under_select_type
+        # above.
         src = self.tmp / "src"; src.mkdir()
         out = self.tmp / "out"; out.mkdir()
         # Entry whose OWN row is really multi_select (2 spans) but the

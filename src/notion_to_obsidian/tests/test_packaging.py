@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 """
-F10: packaging smoke coverage. Nothing in the suite previously verified that
-the pip-installable package (`pyproject.toml`'s two console-script entry
-points, and the `from notion_to_obsidian import run_conversion` library
-import) actually resolves — only the bare-import test style
-(`import notion_db_to_obsidian as n`) was exercised, which works even if the
-package-level wiring (`__init__.py` exports, `[project.scripts]` targets) is
-broken.
+F10: packaging SOURCE-consistency smoke coverage. Nothing in the suite
+previously verified that the pip-installable package (`pyproject.toml`'s two
+console-script entry points, and the `from notion_to_obsidian import
+run_conversion` library import) actually resolves — only the bare-import
+test style (`import notion_db_to_obsidian as n`) was exercised, which works
+even if the package-level wiring (`__init__.py` exports, `[project.scripts]`
+targets) is broken.
+
+This test is a SOURCE check, not an installed-metadata check: it parses
+`pyproject.toml` directly and imports the modules off `sys.path` (via
+`PYTHONPATH=src`) — it never runs `pip install` and never inspects an
+installed distribution's entry-point metadata. That's deliberate: real
+install-time verification (does `pip install -e .` actually register the
+console scripts, does the installed CLI actually run) is carried by CI's
+`--help` smoke steps (`.github/workflows/ci.yml`: `notion2obsidian --help`
+and `notion2obsidian-fix-dates --help` after `pip install -e .`) — not by
+this test. Don't mistake a green run here for "the installed package
+works"; it only proves pyproject.toml's `[project.scripts]` table still
+points at real, importable, callable targets in the source tree.
 
 (a) Parse `pyproject.toml`'s `[project.scripts]` table (a tiny hand-rolled
     parser — no TOML library dependency added just for this) and, for each
