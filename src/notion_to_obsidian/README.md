@@ -424,26 +424,36 @@ a working task list, but the summary here is the durable public record.
   custom pre-pass for cleaner output; if another block type comes out
   garbled, look at the original `.html` and we can add a similar
   pre-pass.
-- **Inline equations use a best-effort fallback.** Notion's documented,
-  confirmed export shape for a BLOCK equation
+- **Inline equations use a best-effort fallback; minor adjacent "residue"
+  text is a known, accepted trade-off.** Notion's documented, confirmed
+  export shape for a BLOCK equation
   (`<figure class="equation"><annotation encoding="application/x-tex">`)
-  converts to a proper `$$...$$` fence. Any bare TeX annotation not inside
-  that figure is treated as inline (`$...$`) — reasonable, but Notion's
-  exact inline-equation markup isn't confirmed against a real export
-  sample, so this is a best-effort fallback rather than a verified path.
-  Wrapper selection for the inline decompose/replace prefers a `<math>`
-  ancestor (scoped to exactly one equation), else an equation/math-classed
-  `<span>` that provably holds no other content, else falls back to
-  touching only the `<annotation>` node itself (H1, 2026-07-06 red-team:
-  the prior "always grab the nearest span or math" approach could delete
-  unrelated sibling content or a second equation sharing the same span).
-  **Residual risk:** in the no-`<math>`-ancestor, non-equation-scoped-span
-  fallback case, only the `<annotation>` node is removed — any sibling
-  presentational MathML (`<mrow>`/`<mi>`/`<mo>`/…) in that same ambiguous
-  span is left in the tree and may leak into the rendered Markdown as
-  stray prose. This narrow residue is accepted deliberately: never
-  deleting real, unrelated content takes strict priority over perfectly
-  clean MathML residue removal.
+  converts to a proper `$$...$$` fence and is unaffected by anything below.
+  Any bare TeX annotation not inside that figure is treated as inline
+  (`$...$`) — reasonable, but Notion's exact inline-equation markup isn't
+  confirmed against a real export sample, so this is a best-effort
+  fallback rather than a verified path.
+
+  Inline conversion (J1, definitive fix) replaces ONLY the `<annotation>`
+  node itself — it never decomposes or replaces any ancestor (`<math>`,
+  `<span>`, `<semantics>`, ...). Four consecutive red-team rounds (G3, H1,
+  I1, and a final round) each found a NEW silent-data-loss or crash bug in
+  decompose/replace-the-ancestor logic: sibling prose deleted, a sibling
+  equation deleted, a crash on a detached node, and — the shape that
+  forced this rewrite — N-1 of N equations silently lost when they shared
+  one `<math>` wrapper under realistic MathJax `<semantics>/<mrow>`
+  nesting, because mutating an ancestor mid-loop corrupted the tree the
+  next iteration was still scoping against. Replacing only the annotation
+  node is safe by construction: no ancestor is ever touched, so there is
+  no wrapper-scoping decision left to get wrong and no
+  mutation-during-iteration hazard, regardless of markup shape, nesting
+  depth, or how many equations share a wrapper.
+
+  **Accepted trade-off:** sibling presentation MathML (`<mrow>`, `<mi>`,
+  `<mo>`, ...) is left in the tree, so markdownify may render it as
+  adjacent plain-text "residue" next to the `$tex$` in the note. This is
+  cosmetic — strictly preferable to the silent data loss the prior
+  wrapper-removal approach caused.
 - **Query-string-only or empty-after-strip relative `<a href>`s pass
   through unmodified with no warning (H4).** A relative href like
   `?query` alone, or `#frag?query` where the path portion is empty after

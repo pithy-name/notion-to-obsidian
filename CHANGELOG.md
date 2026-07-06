@@ -4,6 +4,20 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-07-06 — J1: definitive fix — replace only the annotation node, never an ancestor wrapper
+
+Four consecutive red-team rounds (G3, H1, I1, and a fifth round below) each found a NEW silent-data-loss or crash bug in `_convert_equations`'s inline-equation path, every time in the same place: decomposing/replacing some ANCESTOR of the `<annotation>` node (a `<span>` or `<math>` wrapper), selected by a "is this wrapper exclusively scoped to one equation" heuristic. Each round's fix made the heuristic stricter; each round a new markup shape slipped past it. Patching the heuristic again was judged the wrong move — the entire approach (mutate an ancestor at all) is the bug class.
+
+**Round 5 (CRITICAL, regression of I1)** — I1's `_is_equation_scoped_wrapper` re-evaluates "is this `<math>` safe to decompose/replace" fresh on each loop iteration by walking descendants of the current tree state. Realistic MathJax export nesting wraps each equation in its own `<semantics><mrow>...</mrow><annotation>...</annotation></semantics>` sibling under one shared `<math>` — a shape none of G3/H1/I1's hand-built test fixtures exercised. Processing the first annotation decomposes/replaces its own ancestor, mutating the tree the loop is still iterating; the live re-check for the next annotation then runs against a mutated tree and either mis-scopes or finds its own ancestor chain already partly detached. Net effect: N-1 of N equations sharing one `<math>` are silently lost — confirmed as a failing test (2 equations → only the last survives; 3 equations → only the last survives) before any fix landed.
+
+**The fix (J1):** stop selecting an ancestor wrapper at all. The inline path now does `annotation.replace_with(NavigableString(placeholder))` (non-empty TeX) or `annotation.decompose()` (empty TeX) directly on the `<annotation>` node being iterated — full stop, no ancestor lookup, no scoping heuristic. This is safe by construction: since no ancestor is ever touched, there is no "is this wrapper exclusively scoped" decision left to get wrong, and no mutation-during-iteration hazard, regardless of markup shape, nesting depth, or how many equations share a `<math>`/`<span>`. Removed the now-dead `_is_equation_scoped_wrapper`, `_is_equation_scoped_span`, `_safe_remove`, and `_MATHML_PRESENTATION_TAGS` (grep-confirmed unreferenced anywhere else in the codebase before removal).
+
+**Accepted trade-off (not a regression to chase):** replacing only the annotation leaves sibling presentation MathML (`<mrow>`, `<mi>`, `<mo>`, ...) in the tree; markdownify may render it as adjacent plain-text "residue" next to the `$tex$`. Cosmetic, and strictly preferable to the silent data loss this replaces. One existing test (`test_empty_inline_annotation_with_mathml_sibling_leaves_no_residue`, from the G3 fix) asserted residue-ABSENCE, which required decomposing the `<math>` ancestor — exactly the operation causing the round-5 loss; its assertion was updated to check the safety property (no crash, real prose survives) instead, with a code comment explaining why. Block equations (`<figure class="equation">`) are untouched by this change — a block figure is a self-contained single-equation unit, whole-figure replacement remains safe.
+
+New tests added: realistic 2-equation and 3-equation shared-`<math>` shapes (the round-5 repro), a shared-`<span class="equation">` variant, plus regression coverage carrying forward the round-4 shapes (unrelated-prose-plus-annotation, bare annotations with no `<semantics>`) and common-case block/inline sanity checks. Full suite grown from 228 (I-round baseline) to 236.
+
+---
+
 ## 2026-07-06 — Round-4 red-team fixes (I1–I3): H1 fixed `<span>`, left `<math>` unguarded
 
 A fourth adversarial panel found H1's fix (scope wrapper selection to avoid over-deletion) only guarded the `<span>` branch of `_convert_equations`'s inline path — the `<math>` branch was left exactly as unconditional as the pre-H1 bug it fixed.
