@@ -853,6 +853,36 @@ def _convert_equations(
     def _placeholder() -> str:
         return f"NOTIONEQPLACEHOLDER{len(equation_map)}ENDPLACEHOLDER"
 
+    def _is_equation_scoped_span(span: Tag, annotation: Tag) -> bool:
+        """
+        H1 (round-3 red-team): is `span` safe to decompose/replace whole, as
+        this ONE equation's exclusive wrapper?
+
+        `find_parent(["math", "span"])` (the pre-H1 approach) returns the
+        NEAREST span regardless of what else it wraps. Two confirmed failure
+        shapes: (a) two <annotation> siblings share one span -- decomposing
+        on the first destroys the second, real equation; (b) the nearest
+        span wraps unrelated real prose -- decomposing deletes that prose
+        too. A span is only safe to treat as this equation's own wrapper if
+        (1) its class marks it equation/math-specific, AND (2) it contains
+        no content beyond this one annotation's own MathML/presentation
+        nodes -- no other <annotation>, no non-whitespace text.
+        """
+        classes = " ".join(span.get("class") or []).lower()
+        if "equation" not in classes and "math" not in classes:
+            return False
+        other_annotations = [
+            a for a in span.find_all("annotation", attrs={"encoding": "application/x-tex"})
+            if a is not annotation
+        ]
+        if other_annotations:
+            return False
+        for descendant in span.descendants:
+            if isinstance(descendant, NavigableString) and descendant.strip():
+                if annotation not in descendant.parents:
+                    return False
+        return True
+
     for fig in body_tag.find_all("figure", class_=lambda c: c and "equation" in c):
         annotation = fig.find("annotation", attrs={"encoding": "application/x-tex"})
         tex = (annotation.get_text(strip=True) if annotation else fig.get_text(strip=True))
@@ -875,17 +905,30 @@ def _convert_equations(
     # inline handling.
     for annotation in body_tag.find_all("annotation", attrs={"encoding": "application/x-tex"}):
         tex = annotation.get_text(strip=True)
-        wrapper = annotation.find_parent(["math", "span"]) or annotation
+        # H1 (round-3 red-team, over-deletion regression of G3): the old
+        # `annotation.find_parent(["math", "span"]) or annotation` grabbed
+        # the NEAREST span/math ancestor unconditionally -- which can be
+        # shared by unrelated content (a second annotation, or real prose)
+        # and its blast radius then deletes/replaces that unrelated content
+        # too. Only ever decompose/replace a wrapper that is unambiguously
+        # scoped to this ONE equation:
+        #   1. a <math> ancestor, if any -- a <math> element wraps exactly
+        #      one equation's presentation MathML + its own annotation; or
+        #   2. a <span> ancestor, but ONLY if its class marks it as
+        #      equation/math-specific AND it holds no content beyond this
+        #      annotation's own nodes (see _is_equation_scoped_span); or
+        #   3. otherwise, fall back to the annotation node itself -- the
+        #      old (pre-G3) narrow behavior. This accepts a narrow MathML-
+        #      residue leak in that ambiguous case rather than risk
+        #      deleting real content; see README Known Issues.
+        wrapper = annotation.find_parent("math")
+        if wrapper is None:
+            span_ancestor = annotation.find_parent("span")
+            if span_ancestor is not None and _is_equation_scoped_span(span_ancestor, annotation):
+                wrapper = span_ancestor
+        if wrapper is None:
+            wrapper = annotation
         if not tex:
-            # G3 fix: decompose the WRAPPER, not just the <annotation> node.
-            # Real Notion inline-equation markup carries presentational
-            # MathML alongside the (possibly empty) TeX annotation
-            # (<math><mrow><mi>x</mi>...</mrow><annotation .../></math>).
-            # Decomposing only the annotation left that sibling MathML in
-            # the tree; markdownify then rendered it as ordinary prose text
-            # (e.g. "x+2"), silently injected into the paragraph even though
-            # this warning claims "nothing to preserve." Removing the same
-            # wrapper the non-empty branch below operates on makes that true.
             if warnings is not None:
                 warnings.append(
                     "dropped an inline equation annotation with empty TeX "

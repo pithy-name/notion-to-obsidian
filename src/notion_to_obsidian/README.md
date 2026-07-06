@@ -410,6 +410,28 @@ a working task list, but the summary here is the durable public record.
   that figure is treated as inline (`$...$`) — reasonable, but Notion's
   exact inline-equation markup isn't confirmed against a real export
   sample, so this is a best-effort fallback rather than a verified path.
+  Wrapper selection for the inline decompose/replace prefers a `<math>`
+  ancestor (scoped to exactly one equation), else an equation/math-classed
+  `<span>` that provably holds no other content, else falls back to
+  touching only the `<annotation>` node itself (H1, 2026-07-06 red-team:
+  the prior "always grab the nearest span or math" approach could delete
+  unrelated sibling content or a second equation sharing the same span).
+  **Residual risk:** in the no-`<math>`-ancestor, non-equation-scoped-span
+  fallback case, only the `<annotation>` node is removed — any sibling
+  presentational MathML (`<mrow>`/`<mi>`/`<mo>`/…) in that same ambiguous
+  span is left in the tree and may leak into the rendered Markdown as
+  stray prose. This narrow residue is accepted deliberately: never
+  deleting real, unrelated content takes strict priority over perfectly
+  clean MathML residue removal.
+- **Query-string-only or empty-after-strip relative `<a href>`s pass
+  through unmodified with no warning (H4).** A relative href like
+  `?query` alone, or `#frag?query` where the path portion is empty after
+  stripping, falls through all link-resolution branches (absolute URL,
+  `.html` wikilink resolution, bare `#fragment`) untouched. Notion's own
+  export doesn't produce this shape — internal links are always absolute
+  URLs, `<Node>.html[...]`, or a bare `#fragment` — so reachability from a
+  real export is nil. Found by the 2026-07-06 round-3 red-team panel;
+  deferred as out-of-scope/unreachable, no code fix implemented.
 - **The root/landing page's body is best-effort.** A page that owns
   databases is written as a note and becomes their home (base embeds +
   entry links), but its own body — Notion's `collection-content` gallery

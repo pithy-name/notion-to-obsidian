@@ -201,5 +201,68 @@ class PlaceholderSubstitutionCollisionSafe(unittest.TestCase):
         )
 
 
+class InlineEquationWrapperOverDeletion(unittest.TestCase):
+    """
+    H1 (round-3 red-team, CRITICAL regression of G3): `find_parent(["math",
+    "span"])` returns the NEAREST span/math ancestor, which can be shared by
+    unrelated content -- either a second, real annotation, or plain prose --
+    and G3's "decompose/replace the whole wrapper" fix inherited that same
+    over-broad blast radius. The wrapper selected for decompose/replace must
+    be unambiguously scoped to exactly this one equation; anything else must
+    fall back to touching only the <annotation> node itself.
+    """
+
+    def test_two_annotations_sharing_one_span_second_equation_survives(self):
+        # Shape (a): two <annotation> siblings share one span. The first is
+        # empty (nothing to preserve); the second is a real equation. Naively
+        # decomposing the shared span on the first (empty) annotation would
+        # silently destroy the second, real equation before the loop ever
+        # reaches it -- plus a false "nothing to preserve" warning for what
+        # is, net, a real equation loss.
+        warnings = []
+        md = _conv(
+            '<p><span class="equation-inline">'
+            '<annotation encoding="application/x-tex"></annotation>'
+            '<annotation encoding="application/x-tex">x+2</annotation>'
+            '</span></p>',
+            warnings=warnings,
+        )
+        self.assertIn("$x+2$", md)
+        empty_eq_warnings = [
+            w for w in warnings if "equation" in w.lower() and "empty" in w.lower()
+        ]
+        self.assertEqual(
+            len(empty_eq_warnings), 1,
+            f"expected exactly one empty-equation warning, got: {warnings}",
+        )
+
+    def test_span_wrapping_unrelated_prose_is_not_deleted(self):
+        # Shape (b): the nearest span wraps real prose alongside the empty
+        # annotation. The span is not equation-scoped (no equation/math
+        # class), so it must never be decomposed -- only the empty
+        # <annotation> node itself may be removed.
+        md = _conv(
+            '<p>Before <span>IMPORTANT real content '
+            '<annotation encoding="application/x-tex"></annotation>'
+            '</span> after</p>'
+        )
+        self.assertIn("IMPORTANT real content", md)
+        self.assertIn("Before", md)
+        self.assertIn("after", md)
+
+    def test_nonempty_equation_in_span_with_unrelated_prose_preserves_prose(self):
+        # Same over-broad-wrapper risk applies to the NON-empty inline path
+        # (`wrapper.replace_with(...)`), not just the empty-decompose path.
+        md = _conv(
+            '<p>Before <span>IMPORTANT real content '
+            '<annotation encoding="application/x-tex">x+2</annotation>'
+            '</span> after</p>'
+        )
+        self.assertIn("IMPORTANT real content", md)
+        self.assertIn("$x+2$", md)
+        self.assertIn("Before", md)
+        self.assertIn("after", md)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

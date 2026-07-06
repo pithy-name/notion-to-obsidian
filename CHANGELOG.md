@@ -4,6 +4,20 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-07-06 — Round-3 red-team fixes (H1–H3): a critical over-deletion regression in G3 itself
+
+A third adversarial panel reviewed the G-round fix wave and found G3's own fix (decompose the wrapper, not just the annotation) had reintroduced a data-loss bug of its own, worse than the one it fixed.
+
+**H1 (CRITICAL regression of G3)** — `_convert_equations`'s inline path used `annotation.find_parent(["math", "span"])` to find "the wrapper" to decompose/replace. That grabs the NEAREST span/math ancestor unconditionally, which can be shared by unrelated content: (a) two `<annotation>` siblings inside one span — decomposing on the first (empty) one destroyed the second, REAL equation before the loop reached it, plus a false "nothing to preserve" warning for what was, net, a genuine equation loss; (b) the nearest span wrapping real prose alongside the empty annotation — decompose deleted that prose too. The non-empty branch (`wrapper.replace_with(...)`) had the identical blast radius. Fixed by scoping wrapper selection strictly: prefer a `<math>` ancestor (always exclusively one equation's own MathML + annotation); else a `<span>` only if its class marks it equation/math-specific AND it provably holds no content beyond this one annotation (no sibling `<annotation>`, no stray non-whitespace text); else fall back to touching only the `<annotation>` node itself — the pre-G3 narrow behavior, which never deletes anything but this node. **Residual, accepted risk:** in that last fallback case, sibling presentational MathML in an ambiguous span is left in the tree and may leak into rendered Markdown as stray prose (the original G3 problem, narrowed to only the truly ambiguous shape). Documented in `src/notion_to_obsidian/README.md` Known limitations. Data preservation takes strict priority over residue-cleanliness here — chasing perfect MathML cleanup in the ambiguous case would require guessing at unconfirmed real-export markup, which is exactly the kind of invented-shape fix this project avoids elsewhere.
+
+**H2 (Medium-High, G4 cross-run gap)** — `emit_types_json`'s G4 collision guard (precompute real schema keys, don't let a synthetic `<Prop> (end)` key clobber a same-named real property) was intra-call only. Across separate runs onto the SAME output vault, a stale synthetic `<Prop> (end)` entry persisted on disk from a prior run's `types.json` still won over a genuinely real property of that name in a later run, because `key not in types_map` was already False from the stale on-disk entry — `real_keys` only knew the current run's schema, not what's already on disk. `types.json` is documented as an additive, safe-to-rerun cross-run merge, so this was reachable. Fixed: a key that IS a real property in the CURRENT run's schema now force-overwrites `types_map[key]` even if a stale entry already occupies it; only the SYNTHETIC `<Prop> (end)` write keeps the "don't clobber an existing entry" guard.
+
+**H3 (LOW, test-adequacy)** — `test_real_end_property_keeps_its_own_type_declared_first` stayed green even with the G4 hunk fully reverted, because the pre-existing `if end_key not in types_map` guard already protected that declared-first ordering independent of the `real_keys` precomputation logic it claimed to cover. After H2 landed, this test's cross-run-shaped sibling now exercises the new force-overwrite path directly; the vacuous test's docstring corrected to state plainly what it does and doesn't guard.
+
+Full suite green throughout, grown from 219 (G-round baseline) to 222.
+
+---
+
 ## 2026-07-06 — Round-2 red-team fixes (G1–G8): regressions from the F-round fix wave
 
 A second adversarial panel reviewed the F1–F14 fix wave itself and found the fixes had introduced their own regressions/gaps (G1–G8), fixed here, each with a failing test first.
