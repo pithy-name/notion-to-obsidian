@@ -23,9 +23,9 @@ src/notion_to_obsidian/
   __init__.py                         # exports run_conversion
   notion_db_to_obsidian.py            # main script — library entry point + CLI (console script: notion2obsidian)
   fix_frontmatter_dates.py            # maintenance utility (console script: notion2obsidian-fix-dates)
-  synthetic_export.py                 # builds synthetic HTML export fixtures for tests
   README.md
   tests/                              # all test_*.py (+ tests/__init__.py sys.path shim)
+    synthetic_export.py                # builds synthetic HTML export fixtures for tests; lives here (not the package root) so it's excluded from the wheel
 legacy/                               # older CSV-merge scripts + README — NOT packaged/importable
 ```
 
