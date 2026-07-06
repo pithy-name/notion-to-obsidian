@@ -1304,9 +1304,20 @@ def emit_types_json(
     if not dry_run:
         types_path.write_text(content, encoding="utf-8")
     if added:
+        # B10: this is an ADDITIVE schema merge (new property keys added,
+        # nothing existing touched) — a different EVENT KIND from a file
+        # collision/preservation (an existing .base/.md that got a `.new`
+        # sibling, or was overwritten with --force). It used to share the
+        # same overwrite_log list with no distinguishing prefix, so the run
+        # summary's "any(w.startswith('OVERWROTE'))/else PRESERVED" heuristic
+        # mislabeled a benign schema update as "PRESERVED N existing
+        # file(s); new content written to .new siblings" — untrue; no .new
+        # file was ever written for this. Tagging it "SCHEMA-MERGED" (its own
+        # prefix, checked explicitly in _emit_conversion_report) keeps it out
+        # of both the OVERWROTE and PRESERVED buckets.
         overwrite_log.append(
-            f"{'WOULD UPDATE' if dry_run else 'Updated'} `.obsidian/types.json` "
-            f"(added {len(added)}: {', '.join(added)})."
+            f"{'WOULD SCHEMA-MERGE' if dry_run else 'SCHEMA-MERGED'} "
+            f"`.obsidian/types.json` (added {len(added)}: {', '.join(added)})."
         )
 
 
@@ -2299,6 +2310,21 @@ def _emit_conversion_report(
         lines.append("## Per-entry warnings")
         for w in total_warnings:
             lines.append(f"- {w}")
+    # B10: classify overwrite_log entries by EVENT KIND before deciding what
+    # header/summary to print. A run that only added new schema keys to
+    # types.json (SCHEMA-MERGED) or only flagged an ambiguous directory
+    # filter (WARN, B3) has neither overwritten nor preserved any file — the
+    # old logic ("any OVERWROTE? else assume PRESERVED") mislabeled those
+    # runs as "PRESERVED N existing file(s); new content written to .new
+    # siblings", which was simply untrue (no .new file was ever written).
+    overwrite_events = [w for w in overwrite_log if w.startswith(("OVERWROTE", "WOULD OVERWRITE"))]
+    schema_merge_events = [w for w in overwrite_log if w.startswith(("SCHEMA-MERGED", "WOULD SCHEMA-MERGE"))]
+    warn_events = [w for w in overwrite_log if w.startswith("WARN")]
+    preserve_events = [
+        w for w in overwrite_log
+        if w not in overwrite_events and w not in schema_merge_events and w not in warn_events
+    ]
+
     if overwrite_log:
         lines.append("")
         if dry_run:
@@ -2309,9 +2335,9 @@ def _emit_conversion_report(
                 "re-ran without `--dry-run`. Nothing has been written."
             )
             lines.append("")
-        elif any(w.startswith("OVERWROTE") for w in overwrite_log):
+        elif overwrite_events:
             lines.append("## Overwrites (--force)")
-        else:
+        elif preserve_events:
             lines.append("## Skipped overwrites (existing files preserved)")
             lines.append("")
             lines.append(
@@ -2319,6 +2345,15 @@ def _emit_conversion_report(
                 "`.md` files. To preserve any hand-edits, the new content was "
                 "written next to the existing files with a `.new` suffix. Diff "
                 "and merge by hand, or re-run with `--force` to overwrite."
+            )
+            lines.append("")
+        else:
+            lines.append("## Notes")
+            lines.append("")
+            lines.append(
+                "No file was overwritten or preserved-as-`.new` this run. "
+                "Entries below are additive schema updates and/or WARNs "
+                "flagging a known limitation — see TODO.md for context."
             )
             lines.append("")
         for w in overwrite_log:
@@ -2340,14 +2375,27 @@ def _emit_conversion_report(
         report.write_text("\n".join(lines) + "\n", encoding="utf-8")
         print(f"Wrote report: {report}")
         print(f"Output: {out_root}")
-        if overwrite_log:
-            if any(w.startswith("OVERWROTE") for w in overwrite_log):
-                print(f"  Overwrote {len(overwrite_log)} existing file(s) (--force).")
-            else:
-                print(
-                    f"  PRESERVED {len(overwrite_log)} existing file(s); new content "
-                    f"written to .new siblings. See _conversion_report.md."
-                )
+        # B10: report each EVENT KIND with its own line — an additive schema
+        # merge and a WARN are neither an overwrite nor a preserved file, and
+        # must not be folded into the "PRESERVED N existing file(s)" count.
+        if overwrite_events:
+            print(f"  Overwrote {len(overwrite_events)} existing file(s) (--force).")
+        if preserve_events:
+            print(
+                f"  PRESERVED {len(preserve_events)} existing file(s); new content "
+                f"written to .new siblings. See _conversion_report.md."
+            )
+        if schema_merge_events:
+            print(
+                f"  SCHEMA-MERGED {len(schema_merge_events)} additive update(s) into "
+                f"`.obsidian/types.json` (no existing keys touched). "
+                f"See _conversion_report.md."
+            )
+        if warn_events:
+            print(
+                f"  {len(warn_events)} WARN(s) — known limitations flagged, not "
+                f"necessarily errors. See _conversion_report.md."
+            )
     print("Done.")
 
 
