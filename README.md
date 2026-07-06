@@ -19,6 +19,16 @@ python3 -m venv .venv && .venv/bin/pip install --upgrade pip
 
 Requires Python 3.9+. Dependencies (`beautifulsoup4`, `markdownify`, `pyyaml`) install automatically.
 
+**Editable installs need pip >= 21.3.** This project is a `pyproject.toml`-only,
+setuptools-based layout (no `setup.py`). Python 3.9's *bundled* pip (21.2.4)
+predates [PEP 660](https://peps.python.org/pep-0660/) and fails `pip install
+-e .` with `ERROR: Project ... has a 'pyproject.toml' and its build backend
+is missing the 'build_editable' hook` / "editable mode currently requires a
+setuptools-based build". Either upgrade pip inside the venv first (the
+`--upgrade pip` step above), or drop `-e` and use a plain `pip install .` —
+that always works regardless of pip version, you just lose live-reload of
+local edits.
+
 ## CLI usage
 
 Installing the package puts two console scripts on your `PATH`:

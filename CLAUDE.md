@@ -49,7 +49,7 @@ legacy/                               # older CSV-merge scripts + README — NOT
 
 - Working runtime: `/usr/bin/python3` (Python 3.9, has `beautifulsoup4` installed at `~/Library/Python/3.9/`).
 - `python3` in PATH resolves to Homebrew Python 3.14, which does **not** have `beautifulsoup4`. Do not use it.
-- **Packaged (pip-installable) since the src-layout move.** For a fresh dev/test venv against the console scripts: `/usr/bin/python3 -m venv .venv-dev && .venv-dev/bin/pip install --upgrade pip && .venv-dev/bin/pip install -e .` (older pip versions need the upgrade step for a PEP 517 editable install). This gets you `notion2obsidian` / `notion2obsidian-fix-dates` on `.venv-dev/bin/` and `import notion_to_obsidian` working. Any `.venv*` dir is gitignored — never commit one.
+- **Packaged (pip-installable) since the src-layout move.** For a fresh dev/test venv against the console scripts: `/usr/bin/python3 -m venv .venv-dev && .venv-dev/bin/pip install --upgrade pip && .venv-dev/bin/pip install -e .` (the `--upgrade pip` step matters: Python 3.9's bundled pip is 21.2.4, which predates PEP 660 and fails `-e .` on this pyproject-only, setuptools-based layout with no `setup.py` — needs pip >= 21.3; a plain `pip install .`, no `-e`, works on any pip version). This gets you `notion2obsidian` / `notion2obsidian-fix-dates` on `.venv-dev/bin/` and `import notion_to_obsidian` working. Any `.venv*` dir is gitignored — never commit one.
 - Dependencies: `beautifulsoup4`, `markdownify`, `pyyaml` (floors pinned in `pyproject.toml`; installed-and-tested-against versions are 4.14.3 / 1.2.2 / 6.0.3 — check with `/usr/bin/python3 -m pip show <name>` before assuming a floor is still accurate).
 
 ## Project invariants
