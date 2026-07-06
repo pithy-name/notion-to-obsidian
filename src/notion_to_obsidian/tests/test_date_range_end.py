@@ -8,6 +8,7 @@ per TODO.md's recommended option (A): both stay date-typed/sortable.
 
 Run: /usr/bin/python3 test_date_range_end.py
 """
+import json
 import tempfile
 import unittest
 from collections import Counter, OrderedDict
@@ -252,24 +253,117 @@ class EmitTypesJsonRealEndPropertyNeverClobbered(unittest.TestCase):
         self.assertEqual(types_doc["types"].get("Duration (end)"), "text")
 
 
-class EmitTypesJsonCrossRunRealPropertyWins(unittest.TestCase):
+class EmitTypesJsonNeverClobbersUserCustomization(unittest.TestCase):
     """
-    H2 (round-3 red-team, G4 cross-run gap): G4's collision guard
-    (`real_keys` precomputed per call) only protects a SINGLE `emit_types_json`
-    call. `types.json` is documented as an additive, safe-to-rerun merge
-    across separate conversion runs onto the SAME output vault. If run 1's
-    schema has a date-range property "Duration" (synthesizing
-    "Duration (end)" = datetime into the on-disk types.json), and a LATER,
-    separate run 2's schema has a genuinely real property literally named
-    "Duration (end)" of a different type, run 2's `real_keys` only knows
-    about run 2's OWN schema -- the stale on-disk synthetic entry already
-    occupies `types_map["Duration (end)"]`, so `key not in types_map` is
-    False and the real property's true type is never registered. Fixed:
-    a key that IS real in the CURRENT run's schema now force-overwrites
-    whatever sits in `types_map`, stale or not.
+    I2 (round-4 red-team, H2 over-correction): H2's fix for the cross-run
+    "<Prop> (end)" collision (`if types_map.get(key) != otype: types_map[key]
+    = otype`) force-overwrote `types_map[key]` for ANY real property whose
+    on-disk type differs from the current run's inference -- not just the
+    narrow stale-synthetic-"(end)"-key case it targeted. That silently
+    reverts a user's manual Obsidian-UI type customization on EVERY re-run:
+    infer "Legs" as `number`, the user retypes it `text` in Obsidian, re-run
+    the SAME conversion (same schema) and H2's code stomps it back to
+    `number` -- worse than the rare bug H2 fixed, and it contradicts the
+    tool's own advertised "never clobber existing entries" contract
+    (docstring / --no-types help / README / console line all still claim the
+    old, safer behavior). Fixed: restored `if key not in types_map` for the
+    on-disk merge -- an existing entry, however it got there, is never
+    touched; only a genuinely missing key is added.
     """
 
-    def test_stale_synthetic_end_key_does_not_preempt_real_property_next_run(self):
+    def test_user_customized_type_survives_a_rerun_with_same_schema(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        out_root = Path(td.name) / "out"
+        out_root.mkdir()
+
+        schema = OrderedDict()
+        schema["Legs"] = {"types": Counter({"number": 1}), "key": "Legs"}
+
+        # Run 1: infers Legs=number, writes it to disk.
+        n.emit_types_json(out_root, schema, force=True, overwrite_log=[], dry_run=False)
+        types_path = out_root / ".obsidian" / "types.json"
+        doc = json.loads(types_path.read_text(encoding="utf-8"))
+        self.assertEqual(doc["types"].get("Legs"), "number")
+
+        # User manually retypes it to `text` in Obsidian's UI.
+        doc["types"]["Legs"] = "text"
+        types_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+        # Run 2: the SAME conversion re-run (same schema, same inferred
+        # type). The user's customization must survive.
+        n.emit_types_json(out_root, schema, force=True, overwrite_log=[], dry_run=False)
+        doc2 = json.loads(types_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            doc2["types"].get("Legs"), "text",
+            "BUG: a user's manual Obsidian-UI type customization was "
+            f"reverted by a re-run with the same inferred schema; got: {doc2['types']}",
+        )
+
+
+class EmitTypesJsonSchemaMergedLogOnlyCountsNewKeys(unittest.TestCase):
+    """
+    I3 (round-4 red-team, largely resolved by I2): the run summary's
+    SCHEMA-MERGED overwrite_log line and the console "(no existing keys
+    touched)" wording are only true if the on-disk merge genuinely never
+    overwrites an existing key. Confirms that end-to-end: a re-run with an
+    existing (user-customized) on-disk entry logs a SCHEMA-MERGED entry
+    that reports only genuinely-new keys added by THIS run, never the
+    customized one that was left untouched.
+    """
+
+    def test_rerun_schema_merge_log_never_mentions_untouched_existing_key(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        out_root = Path(td.name) / "out"
+        out_root.mkdir()
+
+        schema_run1 = OrderedDict()
+        schema_run1["Legs"] = {"types": Counter({"number": 1}), "key": "Legs"}
+        n.emit_types_json(out_root, schema_run1, force=True, overwrite_log=[], dry_run=False)
+
+        types_path = out_root / ".obsidian" / "types.json"
+        doc = json.loads(types_path.read_text(encoding="utf-8"))
+        doc["types"]["Legs"] = "text"  # user customization
+        types_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+        # Run 2: same "Legs" property (would-be no-op) plus one genuinely
+        # NEW property "Color".
+        schema_run2 = OrderedDict()
+        schema_run2["Legs"] = {"types": Counter({"number": 1}), "key": "Legs"}
+        schema_run2["Color"] = {"types": Counter({"select": 1}), "key": "Color"}
+        log: list = []
+        n.emit_types_json(out_root, schema_run2, force=True, overwrite_log=log, dry_run=False)
+
+        # The customization survives untouched (I2).
+        doc2 = json.loads(types_path.read_text(encoding="utf-8"))
+        self.assertEqual(doc2["types"].get("Legs"), "text")
+
+        schema_events = [w for w in log if "types.json" in w]
+        self.assertTrue(schema_events, "expected a types.json log entry")
+        merged_text = " ".join(schema_events)
+        self.assertIn("Color", merged_text)
+        self.assertNotIn("Legs", merged_text)
+
+
+class EmitTypesJsonCrossRunRealPropertyWins(unittest.TestCase):
+    """
+    I2 (round-4 red-team): H2's fix for this cross-run "<Prop> (end)"
+    collision (a stale on-disk synthetic "<Prop> (end)"=datetime from a
+    prior run shadowing a genuinely real, differently-typed property of that
+    exact name in a later run) was a force-overwrite far broader than this
+    narrow case -- see EmitTypesJsonNeverClobbersUserCustomization. The
+    never-clobber-on-disk contract is restored (I2), so this specific
+    collision is no longer "fixed" by overwriting; it is a documented,
+    accepted trade-off instead (see README Known Issues / TODO.md,
+    2026-07-06): a real property is only mistyped in this specific,
+    rare cross-run collision scenario (an actual property must be named
+    literally "<X> (end)" and collide with a prior run's date-range
+    companion key of the same name) -- narrower and far less damaging than
+    reverting every user customization on every run.
+    """
+
+    def test_stale_synthetic_end_key_is_never_clobbered_documented_limitation(self):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         out_root = Path(td.name) / "out"
@@ -290,12 +384,15 @@ class EmitTypesJsonCrossRunRealPropertyWins(unittest.TestCase):
         }
         n.emit_types_json(out_root, schema_run2, force=True, overwrite_log=[], dry_run=False)
 
-        import json
         types_doc = json.loads((out_root / ".obsidian" / "types.json").read_text(encoding="utf-8"))
+        # Documented known limitation (I2, 2026-07-06): the never-clobber
+        # contract means the stale on-disk synthetic entry wins here, not
+        # run 2's real property -- the accepted trade-off vs. H2's
+        # force-overwrite, which fixed this at the cost of reverting user
+        # customizations on every run.
         self.assertEqual(
-            types_doc["types"].get("Duration (end)"), "text",
-            "BUG: run 2's real 'Duration (end)' property was preempted by "
-            f"run 1's stale synthetic entry; got: {types_doc['types']}",
+            types_doc["types"].get("Duration (end)"), "datetime",
+            f"expected the documented never-clobber limitation; got: {types_doc['types']}",
         )
 
 

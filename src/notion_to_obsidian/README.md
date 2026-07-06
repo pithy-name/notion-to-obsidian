@@ -397,18 +397,27 @@ a working task list, but the summary here is the durable public record.
   helper script for fixing already-typed-as-text frontmatter values
   in older vaults: `notion2obsidian-fix-dates` (rewrites human-
   readable Notion dates to ISO 8601 in place; idempotent).
-- **`.obsidian/types.json` re-runs re-assert real properties' types every
-  time (H2, 2026-07-06 red-team).** A real Notion property's type always
-  wins in `.obsidian/types.json`, even overwriting whatever's already
-  there — this is what stops a stale synthetic `<Prop> (end)` entry from a
-  prior run permanently mistyping a genuinely real property of that exact
-  name in a later run onto the same vault. Trade-off: if you manually
-  changed a real property's type via Obsidian's UI (right-click → Set
-  type), that override is no longer sticky across a re-run of the
-  converter onto the same output vault — the next run re-writes it back
-  to the Notion-schema-derived type. Only the SYNTHETIC `<Prop> (end)`
-  companion-date-range entries keep the old "don't touch an existing
-  value" behavior.
+- **A stale synthetic `<Prop> (end)` entry can permanently mistype a same-
+  named real property across separate runs (documented known issue,
+  restored 2026-07-06 after I2 red-team; see also H2).** `.obsidian/types.json`
+  never clobbers an existing entry — only missing keys are added, so a
+  manual Obsidian-UI type override always survives a re-run of the
+  converter onto the same output vault. H2 (round-3) had instead made a
+  real property's type force-overwrite whatever was already in
+  `types.json`, which fixed one narrow cross-run collision but broke that
+  guarantee for every property on every re-run (a genuine user
+  customization got silently reverted every time). I2 (round-4) reverted
+  the force-overwrite and restored the never-clobber contract, accepting
+  the narrow collision as a known limitation instead: if run 1's schema
+  has a date-range property "Duration" (synthesizing a companion
+  "Duration (end)" = `datetime` into `types.json`), and a LATER, separate
+  run onto the SAME output vault has a genuinely real property literally
+  named "Duration (end)" of a different type, that real property's true
+  type is never registered — the stale synthetic entry wins, silently.
+  Reachable only when an actual Notion property is named exactly
+  `<other property> (end)` and collides with a prior run's date-range
+  companion key of the same name — rare. Work around it by hand-editing
+  `.obsidian/types.json` (or setting the type via Obsidian's UI) if hit.
 - **Notion blocks with no clean Markdown equivalent** (column layouts,
   synced blocks, complex embeds) get best-effort flattened by
   markdownify. Bookmark cards, local-file figures, and equations get a
