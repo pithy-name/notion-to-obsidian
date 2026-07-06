@@ -152,5 +152,54 @@ class EmptyEquationWarns(unittest.TestCase):
         )
 
 
+class PlaceholderSubstitutionCollisionSafe(unittest.TestCase):
+    """
+    G7: the placeholder-restore loop is a naive sequential
+    `for placeholder, raw_tex in equation_map.items(): md = md.replace(...)`.
+    If an earlier equation's raw TeX literally contains a LATER equation's
+    placeholder token, that sequential replace corrupts/splices the two
+    equations together — the earlier substitution injects text that the
+    later iteration's `.replace()` call then matches and mangles. Real-world
+    reachability is essentially nil (requires the source doc to contain the
+    internal placeholder token format), but the mechanism itself must be
+    collision-safe (single-pass / non-recursive substitution).
+    """
+
+    def test_earlier_tex_containing_later_placeholder_does_not_splice(self):
+        # Force a specific two-equation ordering: eq0's raw TeX literally
+        # contains the exact placeholder token that eq1 will get
+        # ("NOTIONEQPLACEHOLDER1ENDPLACEHOLDER").
+        tex0 = r"x = NOTIONEQPLACEHOLDER1ENDPLACEHOLDER + 1"
+        tex1 = r"y = 2"
+        md = _conv(
+            '<figure class="equation">'
+            f'<annotation encoding="application/x-tex">{tex0}</annotation>'
+            '</figure>'
+            '<figure class="equation">'
+            f'<annotation encoding="application/x-tex">{tex1}</annotation>'
+            '</figure>'
+        )
+        self.assertIn(f"$${tex0}$$", md)
+        self.assertIn(f"$${tex1}$$", md)
+
+    def test_leftover_placeholder_after_substitution_warns(self):
+        # Defensive signal: if a placeholder token somehow survives
+        # restoration, that's a silent-corruption risk and must warn rather
+        # than ship a raw internal token in the user's markdown.
+        warnings = []
+        md = _conv(
+            '<figure class="equation">'
+            '<annotation encoding="application/x-tex">a = b</annotation>'
+            '</figure>',
+            warnings=warnings,
+        )
+        self.assertIn("$$a = b$$", md)
+        self.assertNotIn("NOTIONEQPLACEHOLDER", md)
+        # No leftover in the happy path -> no leftover-placeholder warning.
+        self.assertFalse(
+            any("placeholder" in w.lower() and "leftover" in w.lower() for w in warnings)
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

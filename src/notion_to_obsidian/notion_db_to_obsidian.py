@@ -1134,8 +1134,31 @@ def convert_body(
     )
     # B7: substitute the raw LaTeX back in now that markdownify (which would
     # have backslash-escaped `_`/`*` inside it) has already run.
-    for placeholder, raw_tex in equation_map.items():
-        md = md.replace(placeholder, raw_tex)
+    #
+    # G7 (collision-safety hardening): a naive sequential
+    # `for ph, tex in equation_map.items(): md = md.replace(ph, tex)` is not
+    # atomic — if an EARLIER equation's raw TeX literally contains a LATER
+    # equation's placeholder token, that later `.replace()` call would match
+    # inside the text just spliced in by the earlier one, corrupting/gluing
+    # the two equations together. Real-world reachability is essentially nil
+    # (requires the source doc to contain the internal placeholder token
+    # format), but the mechanism should be collision-safe regardless. A
+    # single `re.sub` pass over the placeholder pattern scans the ORIGINAL
+    # string once and does not rescan replacement text, so a substituted
+    # value can never be re-matched.
+    if equation_map:
+        _placeholder_re = re.compile(r"NOTIONEQPLACEHOLDER\d+ENDPLACEHOLDER")
+        md = _placeholder_re.sub(lambda m: equation_map.get(m.group(0), m.group(0)), md)
+        # Leftover-placeholder check: if any placeholder token survives
+        # restoration (e.g. markdownify mangled it so the regex above no
+        # longer matches it exactly), that's a silent-corruption signal —
+        # a raw internal token would otherwise ship in the user's markdown
+        # with no indication anything went wrong.
+        if warnings is not None and _placeholder_re.search(md):
+            warnings.append(
+                "one or more equation placeholder tokens were not restored "
+                "to their LaTeX source (possible equation corruption)."
+            )
     # Clean up extra blank lines markdownify can leave behind.
     md = re.sub(r"\n{3,}", "\n\n", md).strip()
     return md
