@@ -22,11 +22,17 @@ vault.
 
 ## Setup
 
+Installed as a package (see the repo root [`README.md`](../../README.md) for
+the `pip install` command) — this gets you the `notion2obsidian` /
+`notion2obsidian-fix-dates` console scripts and an importable `notion_to_obsidian`
+package. If you'd rather run this file directly without installing anything:
+
 ```bash
 pip install beautifulsoup4 markdownify pyyaml
+python3 notion_db_to_obsidian.py ...
 ```
 
-Python 3.8+.
+Python 3.9+.
 
 ## Usage
 
@@ -37,21 +43,24 @@ page, or standalone page, and processes every database it finds:
 
 ```bash
 # Entries folder directly:
-python3 notion_db_to_obsidian.py \
-  "My Notion Export/My Database abc123/"
+notion2obsidian "My Notion Export/My Database abc123/"
 
 # Or the export root (handles multiple databases in one run):
-python3 notion_db_to_obsidian.py "My Notion Export/"
+notion2obsidian "My Notion Export/"
 ```
 
 Default output: a sibling folder named `<source name> (Obsidian)`.
 Override with `-o`:
 
 ```bash
-python3 notion_db_to_obsidian.py \
+notion2obsidian \
   "My Notion Export/My Database abc123/" \
   -o "/path/to/output_vault_folder/"
 ```
+
+(Not installed the package? Substitute
+`python3 notion_db_to_obsidian.py` for `notion2obsidian` in any command
+on this page — same flags, same behavior.)
 
 ### What `-o` does to attachments (default behavior)
 
@@ -90,21 +99,26 @@ entry's attachment directory is materialized in the output:
 | Mode | Disk usage | Output filesystem objects | Source dependency | Status |
 |------|-----------|---------------------------|-------------------|--------|
 | `copy` (default) | ~2× (attachments only) | Real attachment dirs (child-node HTML/folders filtered out) | None — output is self-contained | Tested in production |
-| `--symlink-attachments` | ~1× | Symlinks pointing at source | Source dir must stay where it is | Filesystem-level OK; Obsidian render UNVERIFIED |
+| `--symlink-attachments` | ~1× | Real dir of per-file symlinks pointing at source (child-node HTML/folders filtered out, same as copy mode) | Source dir must stay where it is | Filesystem-level OK; Obsidian render UNVERIFIED |
 | `--inplace-attachments` | ~1× | None for attachments | Source dir must stay at the same relative path from the output | Filesystem-level OK; Obsidian render UNVERIFIED |
 
 **`--symlink-attachments`** — Each entry's attachment directory is
-created in the output as a symlink to the source dir's *absolute*
-path. Md hrefs still reference `<NewDB>/<Entry>/file.pdf` exactly as
-they would in copy mode; the OS resolves the symlink when Obsidian
-opens an embedded file. If you later move or delete the source export,
-all symlinks (and any md links into them) break.
+created in the output as a REAL directory containing one symlink per
+genuine attachment file, pointing at the source file's absolute path —
+the same child-node filter copy mode uses decides what's genuine, so a
+Notion node's own `.html`/hex-folder is never symlinked (an earlier
+version symlinked the whole source directory, which exposed that
+content). Md hrefs still reference `<NewDB>/<Entry>/file.pdf` exactly
+as they would in copy mode; the OS resolves each per-file symlink when
+Obsidian opens an embedded file. If you later move or delete the
+source export, all symlinks (and any md links into them) break.
 
 When you eventually want to consolidate (e.g. retire the source export
-once you trust the new vault), replace each symlink with a real copy
-via `rsync -aL <symlink> <symlink>` (the `-L` flag follows symlinks
-during the copy) or `cp -RL`, then delete the source. That collapses
-the two-location footprint without rewriting any md links.
+once you trust the new vault), resolve each attachment dir's per-file
+symlinks to real copies in place — e.g. per entry dir:
+`cp -RL "<NewDB>/<Entry>" "<NewDB>/<Entry>.real" && rm -rf "<NewDB>/<Entry>" && mv "<NewDB>/<Entry>.real" "<NewDB>/<Entry>"`
+(`-L` follows symlinks during the copy) — then delete the source. That
+collapses the two-location footprint without rewriting any md links.
 
 **`--inplace-attachments`** — No output-side directories or symlinks
 are created for attachments at all. Md hrefs are rewritten to point at
@@ -316,8 +330,42 @@ doesn't duplicate the generated base + links.
 
 ## Known limitations
 
-- **Strikethrough is lost.** `~~text~~` comes through unstyled rather
-  than struck.
+Bug IDs (`B1`, `B3`, …) below refer to the fuller writeup in the repo's
+local (gitignored) `TODO.md` bug-tracking table — not committed, since it's
+a working task list, but the summary here is the durable public record.
+
+- **Strikethrough — reverify against a real export.** The code-level claim
+  that used to be here ("`html_to_md` is markdownify with no strikethrough
+  config") is **disproven**: the pinned `markdownify` (1.2.2+) already
+  aliases both `<s>` and `<del>` to `~~text~~` — verified directly
+  (`markdownify('<s>x</s>')` and `markdownify('<del>x</del>')` both →
+  `'~~x~~'`). If strikethrough still comes through unstyled on a real
+  export, the more likely cause is Notion emitting
+  `<span style="text-decoration:line-through">` rather than `<s>`/`<del>` —
+  unverifiable here without a real export sample.
+- **A landing/root page's own cover image isn't rewritten** to its copied
+  vault path (regular in-body entry images rewrite fine). Attempted and
+  blocked: there's no real Notion export sample available in this repo to
+  confirm where the cover-image markup actually lives (`parse_entry` only
+  reads `<div class="page-body">`), so shipping a fix verified only
+  against invented markup risked doing nothing — or the wrong thing —
+  against a real export. See the comment at `parse_entry` in
+  `notion_db_to_obsidian.py`.
+- **A directory that's ambiguously shaped like a Notion node's attachment
+  folder gets filtered, and there's no content-based way to tell it apart
+  from unrelated user content.** `_attachment_copy_ignore`'s two
+  directory-filtering rules (a sibling `<name>.html`, or a folder holding a
+  hex-named `.html`) can't distinguish a genuine node folder from a
+  same-shaped coincidence without reading file contents — out of scope by
+  design. Every such filter now emits an explicit `WARN (B3, known
+  limitation): ...` line naming the path into `_conversion_report.md`, so
+  the loss is surfaced rather than silent, but the underlying ambiguity is
+  not eliminated.
+- **`--symlink-attachments` and `--inplace-attachments` remain
+  experimental.** Both are filesystem-level tested (symlinks/relative
+  hrefs point at the right targets) but **Obsidian's actual rendering is
+  not yet verified** — spot-check one entry in Obsidian before relying on
+  either mode for anything important.
 - **Rich-text styling is largely stripped.** Indentation and colorized
   text get flattened by `markdownify`; no current workaround.
 - **URLs in output are live** (planned: defang). Converted bodies keep
@@ -347,21 +395,40 @@ doesn't duplicate the generated base + links.
   the type via Obsidian's UI (right-click a property → Set type →
   Date & time), or hand-edit `.obsidian/types.json`. There's a
   helper script for fixing already-typed-as-text frontmatter values
-  in older vaults: `fix_frontmatter_dates.py` (rewrites human-
+  in older vaults: `notion2obsidian-fix-dates` (rewrites human-
   readable Notion dates to ISO 8601 in place; idempotent).
 - **Notion blocks with no clean Markdown equivalent** (column layouts,
   synced blocks, complex embeds) get best-effort flattened by
-  markdownify. Bookmark cards and local-file figures get a custom
-  pre-pass for cleaner output; if another block type comes out
+  markdownify. Bookmark cards, local-file figures, and equations get a
+  custom pre-pass for cleaner output; if another block type comes out
   garbled, look at the original `.html` and we can add a similar
   pre-pass.
+- **Inline equations use a best-effort fallback.** Notion's documented,
+  confirmed export shape for a BLOCK equation
+  (`<figure class="equation"><annotation encoding="application/x-tex">`)
+  converts to a proper `$$...$$` fence. Any bare TeX annotation not inside
+  that figure is treated as inline (`$...$`) — reasonable, but Notion's
+  exact inline-equation markup isn't confirmed against a real export
+  sample, so this is a best-effort fallback rather than a verified path.
 - **The root/landing page's body is best-effort.** A page that owns
   databases is written as a note and becomes their home (base embeds +
   entry links), but its own body — Notion's `collection-content` gallery
   of those databases — is converted by markdownify as-is, so it may read
   as a plain table or list above the generated home sections rather than a
   polished landing page.
+- **By design, not a bug:** relation properties emit as plain title
+  strings, not `[[wikilinks]]` (same-database relations could in principle
+  resolve to entry notes — not implemented). Page-level icons (emoji/image
+  in the page header) aren't captured. There's no `--flat` output-layout
+  flag and no Windows `MAX_PATH` (260-char) handling for deep mirrored
+  paths — a very deeply nested export could hit that limit on Windows.
+
+### Maintenance
+
+This is a personal tool, shared as-is. Issues and PRs are welcome, but
+there's no response SLA.
 
 ---
 
-- **Decision log:** see [`CHANGELOG.md`](../CHANGELOG.md) for context, alternatives, and trade-offs behind each significant change.
+- **Decision log:** see [`CHANGELOG.md`](../../CHANGELOG.md) for context, alternatives, and trade-offs behind each significant change.
+- **Roadmap:** see [`ROADMAP.md`](../../ROADMAP.md) for larger, not-yet-started ideas (e.g. a generic multi-source converter).
