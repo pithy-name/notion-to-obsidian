@@ -225,8 +225,19 @@ class EmitTypesJsonRealEndPropertyNeverClobbered(unittest.TestCase):
         self.assertEqual(types_doc["types"].get("Duration (end)"), "text")
 
     def test_real_end_property_keeps_its_own_type_declared_first(self):
-        # Schema order must not be the safety mechanism (mirrors
-        # RealEndPropertyNeverClobbered's write_entry counterpart).
+        # NOTE (H3, round-3 red-team): this only re-confirms that the
+        # WITHIN-CALL `real_keys` precomputation (G4) is order-independent
+        # -- with "Duration (end)" declared first, it's already written
+        # with its true type before "Duration"'s synthetic registration is
+        # even attempted, so `real_keys` never has to intervene. This test
+        # stays green even with H2's force-overwrite hunk fully reverted
+        # (verified) -- it gives ZERO signal for H2's cross-run
+        # force-overwrite logic. That logic (a stale ON-DISK synthetic
+        # entry from a PRIOR run must not preempt a real property in a
+        # LATER run) is exercised instead by
+        # EmitTypesJsonCrossRunRealPropertyWins, the only scenario where
+        # `real_keys`'s within-call guard can't help and the force-
+        # overwrite has to do the work.
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         out_root = Path(td.name) / "out"
@@ -239,6 +250,53 @@ class EmitTypesJsonRealEndPropertyNeverClobbered(unittest.TestCase):
         types_doc = json.loads((out_root / ".obsidian" / "types.json").read_text(encoding="utf-8"))
         self.assertEqual(types_doc["types"].get("Duration"), "datetime")
         self.assertEqual(types_doc["types"].get("Duration (end)"), "text")
+
+
+class EmitTypesJsonCrossRunRealPropertyWins(unittest.TestCase):
+    """
+    H2 (round-3 red-team, G4 cross-run gap): G4's collision guard
+    (`real_keys` precomputed per call) only protects a SINGLE `emit_types_json`
+    call. `types.json` is documented as an additive, safe-to-rerun merge
+    across separate conversion runs onto the SAME output vault. If run 1's
+    schema has a date-range property "Duration" (synthesizing
+    "Duration (end)" = datetime into the on-disk types.json), and a LATER,
+    separate run 2's schema has a genuinely real property literally named
+    "Duration (end)" of a different type, run 2's `real_keys` only knows
+    about run 2's OWN schema -- the stale on-disk synthetic entry already
+    occupies `types_map["Duration (end)"]`, so `key not in types_map` is
+    False and the real property's true type is never registered. Fixed:
+    a key that IS real in the CURRENT run's schema now force-overwrites
+    whatever sits in `types_map`, stale or not.
+    """
+
+    def test_stale_synthetic_end_key_does_not_preempt_real_property_next_run(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        out_root = Path(td.name) / "out"
+        out_root.mkdir()
+
+        # Run 1: a date-range property "Duration" synthesizes
+        # "Duration (end)" = datetime into types.json.
+        schema_run1 = OrderedDict()
+        schema_run1["Duration"] = {"types": Counter({"date": 1}), "key": "Duration"}
+        n.emit_types_json(out_root, schema_run1, force=True, overwrite_log=[], dry_run=False)
+
+        # Run 2 (a separate conversion invocation onto the same output
+        # vault): no "Duration" date property this time, but a REAL
+        # property literally named "Duration (end)" of type rich_text.
+        schema_run2 = OrderedDict()
+        schema_run2["Duration (end)"] = {
+            "types": Counter({"rich_text": 1}), "key": "Duration (end)"
+        }
+        n.emit_types_json(out_root, schema_run2, force=True, overwrite_log=[], dry_run=False)
+
+        import json
+        types_doc = json.loads((out_root / ".obsidian" / "types.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            types_doc["types"].get("Duration (end)"), "text",
+            "BUG: run 2's real 'Duration (end)' property was preempted by "
+            f"run 1's stale synthetic entry; got: {types_doc['types']}",
+        )
 
 
 if __name__ == "__main__":

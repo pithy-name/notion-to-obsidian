@@ -1458,8 +1458,24 @@ def emit_types_json(
     for pname, info in schema.items():
         key = info["key"]
         dominant_ptype = info["types"].most_common(1)[0][0]
-        if key not in types_map:
-            otype = obsidian_type_for(key, dominant_ptype)
+        otype = obsidian_type_for(key, dominant_ptype)
+        # H2 (round-3 red-team, G4 cross-run gap): G4's `real_keys` guard is
+        # intra-call only. Across SEPARATE runs onto the same output vault
+        # (types.json is a documented additive, safe-to-rerun merge), a
+        # stale synthetic "<Prop> (end)" entry left on disk from a prior
+        # run's date-range property still occupies `types_map[key]` here,
+        # so the old `if key not in types_map` guard silently skipped a
+        # genuinely real property of that exact name in a LATER run — it
+        # never got its own true type. Every key in this loop is, by
+        # construction, a real property of the CURRENT run's schema, so its
+        # true type always wins here, overwriting whatever (stale or not)
+        # already sits in types_map. This is a deliberate trade-off: a
+        # real property's type is now re-asserted on every run rather than
+        # "first write wins" — a manual Obsidian-UI type override for a
+        # real property is no longer sticky across a re-run onto the same
+        # vault (see CHANGELOG). Only the SYNTHETIC "<key> (end)" write
+        # below keeps the "don't clobber an existing entry" guard.
+        if types_map.get(key) != otype:
             types_map[key] = otype
             added.append(f"{key}={otype}")
         # B9: a date-range property may emit a companion "<key> (end)" value

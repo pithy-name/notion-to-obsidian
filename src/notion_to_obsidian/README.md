@@ -397,6 +397,18 @@ a working task list, but the summary here is the durable public record.
   helper script for fixing already-typed-as-text frontmatter values
   in older vaults: `notion2obsidian-fix-dates` (rewrites human-
   readable Notion dates to ISO 8601 in place; idempotent).
+- **`.obsidian/types.json` re-runs re-assert real properties' types every
+  time (H2, 2026-07-06 red-team).** A real Notion property's type always
+  wins in `.obsidian/types.json`, even overwriting whatever's already
+  there — this is what stops a stale synthetic `<Prop> (end)` entry from a
+  prior run permanently mistyping a genuinely real property of that exact
+  name in a later run onto the same vault. Trade-off: if you manually
+  changed a real property's type via Obsidian's UI (right-click → Set
+  type), that override is no longer sticky across a re-run of the
+  converter onto the same output vault — the next run re-writes it back
+  to the Notion-schema-derived type. Only the SYNTHETIC `<Prop> (end)`
+  companion-date-range entries keep the old "don't touch an existing
+  value" behavior.
 - **Notion blocks with no clean Markdown equivalent** (column layouts,
   synced blocks, complex embeds) get best-effort flattened by
   markdownify. Bookmark cards, local-file figures, and equations get a
