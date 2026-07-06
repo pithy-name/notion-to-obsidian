@@ -875,17 +875,26 @@ def _convert_equations(
     # inline handling.
     for annotation in body_tag.find_all("annotation", attrs={"encoding": "application/x-tex"}):
         tex = annotation.get_text(strip=True)
+        wrapper = annotation.find_parent(["math", "span"]) or annotation
         if not tex:
+            # G3 fix: decompose the WRAPPER, not just the <annotation> node.
+            # Real Notion inline-equation markup carries presentational
+            # MathML alongside the (possibly empty) TeX annotation
+            # (<math><mrow><mi>x</mi>...</mrow><annotation .../></math>).
+            # Decomposing only the annotation left that sibling MathML in
+            # the tree; markdownify then rendered it as ordinary prose text
+            # (e.g. "x+2"), silently injected into the paragraph even though
+            # this warning claims "nothing to preserve." Removing the same
+            # wrapper the non-empty branch below operates on makes that true.
             if warnings is not None:
                 warnings.append(
                     "dropped an inline equation annotation with empty TeX "
                     "(nothing to preserve)."
                 )
-            annotation.decompose()
+            wrapper.decompose()
             continue
         placeholder = _placeholder()
         equation_map[placeholder] = f"${tex}$"
-        wrapper = annotation.find_parent(["math", "span"]) or annotation
         wrapper.replace_with(NavigableString(placeholder))
 
 

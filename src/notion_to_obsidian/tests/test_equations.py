@@ -120,6 +120,37 @@ class EmptyEquationWarns(unittest.TestCase):
             f"expected an empty-equation warning, got: {warnings}",
         )
 
+    def test_empty_inline_annotation_with_mathml_sibling_leaves_no_residue(self):
+        """
+        G3: real Notion inline-equation markup carries presentational MathML
+        alongside the (possibly empty) TeX annotation:
+            <span class="math"><math>...<mrow><mi>x</mi>...</mrow>
+              <annotation encoding="application/x-tex"></annotation></math></span>
+        `annotation.decompose()` only removes the <annotation> node, leaving
+        the sibling <mrow><mi>x</mi>... MathML in the tree — markdownify then
+        renders it as ordinary prose text ("x+2"), silently injected into the
+        paragraph even though the warning claims "nothing to preserve." The
+        fix must decompose the whole wrapper, not just the annotation.
+        """
+        warnings = []
+        md = _conv(
+            '<p>Before '
+            '<span class="math"><math>'
+            '<mrow><mi>x</mi><mo>+</mo><mn>2</mn></mrow>'
+            '<annotation encoding="application/x-tex"></annotation>'
+            '</math></span>'
+            ' after.</p>',
+            warnings=warnings,
+        )
+        self.assertNotIn("x+2", md)
+        self.assertNotIn("+2", md)
+        self.assertIn("Before", md)
+        self.assertIn("after", md)
+        self.assertTrue(
+            any("equation" in w.lower() and "empty" in w.lower() for w in warnings),
+            f"expected an empty-equation warning, got: {warnings}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
