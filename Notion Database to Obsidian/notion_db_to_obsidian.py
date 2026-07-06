@@ -241,11 +241,21 @@ def convert_property_value(ptype: str, td: Tag) -> Any:
         values = [s.get_text(strip=True) for s in td.find_all("span", class_="selected-value")]
         return values or None
 
-    # Single select / status: one string
+    # Single select / status: one string.
+    # NOTE (B8): when schema type-drift makes this entry's actual value carry
+    # MULTIPLE selected-value spans (its own row was really multi_select, but
+    # the dominant type across the database is select/status), grabbing only
+    # the first span silently drops the rest — genuine data loss. Collect every
+    # span and return a list when there's more than one, regardless of which
+    # type name was passed in; a true single-select row only ever has one span,
+    # so this is a no-op for the common case.
     if ptype in ("select", "status"):
-        span = td.find("span", class_="selected-value")
-        if span:
-            return span.get_text(strip=True) or None
+        spans = td.find_all("span", class_="selected-value")
+        if spans:
+            values = [s.get_text(strip=True) for s in spans if s.get_text(strip=True)]
+            if not values:
+                return None
+            return values if len(values) > 1 else values[0]
         return raw_text or None
 
     # Checkbox: bool
