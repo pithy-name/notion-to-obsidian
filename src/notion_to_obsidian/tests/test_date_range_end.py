@@ -199,5 +199,47 @@ class EmitTypesJsonRegistersEndKey(unittest.TestCase):
         self.assertEqual(types_doc["types"].get("Duration (end)"), "datetime")
 
 
+class EmitTypesJsonRealEndPropertyNeverClobbered(unittest.TestCase):
+    """
+    G4 (F5 incomplete): the F5 collision guard was added to `write_entry` but
+    not to `emit_types_json`. When a real property literally named
+    "Duration (end)" is iterated (in schema order) AFTER a date property
+    "Duration", the synthetic end-key registration below already occupies
+    `types_map["Duration (end)"]` = "datetime", so `if key not in types_map`
+    is False for the real property and it never gets its own true type
+    registered — it's permanently mistyped in `.obsidian/types.json`.
+    """
+
+    def test_real_end_property_keeps_its_own_type(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        out_root = Path(td.name) / "out"
+        out_root.mkdir()
+        schema = OrderedDict()
+        schema["Duration"] = {"types": Counter({"date": 1}), "key": "Duration"}
+        schema["Duration (end)"] = {"types": Counter({"text": 1}), "key": "Duration (end)"}
+        n.emit_types_json(out_root, schema, force=False, overwrite_log=[], dry_run=False)
+        import json
+        types_doc = json.loads((out_root / ".obsidian" / "types.json").read_text(encoding="utf-8"))
+        self.assertEqual(types_doc["types"].get("Duration"), "datetime")
+        self.assertEqual(types_doc["types"].get("Duration (end)"), "text")
+
+    def test_real_end_property_keeps_its_own_type_declared_first(self):
+        # Schema order must not be the safety mechanism (mirrors
+        # RealEndPropertyNeverClobbered's write_entry counterpart).
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        out_root = Path(td.name) / "out"
+        out_root.mkdir()
+        schema = OrderedDict()
+        schema["Duration (end)"] = {"types": Counter({"text": 1}), "key": "Duration (end)"}
+        schema["Duration"] = {"types": Counter({"date": 1}), "key": "Duration"}
+        n.emit_types_json(out_root, schema, force=False, overwrite_log=[], dry_run=False)
+        import json
+        types_doc = json.loads((out_root / ".obsidian" / "types.json").read_text(encoding="utf-8"))
+        self.assertEqual(types_doc["types"].get("Duration"), "datetime")
+        self.assertEqual(types_doc["types"].get("Duration (end)"), "text")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

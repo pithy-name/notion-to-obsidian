@@ -1378,6 +1378,16 @@ def emit_types_json(
     if not isinstance(types_map, dict):
         types_map = {}
 
+    # G4 (F5 incomplete): the "<Prop> (end)" collision guard was added to
+    # write_entry but not here. Precompute every REAL schema key up front —
+    # same reasoning as write_entry's `schema_keys` — so a synthetic
+    # "<key> (end)" registration below can never occupy the slot before a
+    # real property of that exact name gets its turn in the loop (schema
+    # order is not the safety mechanism: a real "Duration (end)" property
+    # appearing AFTER "Duration" in schema order must still win with its own
+    # true type, not be preempted by the synthetic datetime registration).
+    real_keys = {info["key"] for info in schema.values()}
+
     added: List[str] = []
     for pname, info in schema.items():
         key = info["key"]
@@ -1389,10 +1399,16 @@ def emit_types_json(
         # B9: a date-range property may emit a companion "<key> (end)" value
         # (see write_entry) on any entry whose raw value was a range. Register
         # it as datetime too, so Bases sorts/types it correctly wherever it
-        # shows up — never clobbers an existing user choice for that key.
+        # shows up — never clobbers an existing user choice for that key, and
+        # (G4) never preempts a REAL property of that exact name — the real
+        # property's own true type wins. NOTE: unlike write_entry, this
+        # function has no `warnings` accumulator threaded in for a
+        # per-collision message; the correctness fix (real type wins) stands
+        # on its own, but a collision here is currently silent — surfaced at
+        # the write_entry level instead, which does warn per-entry.
         if dominant_ptype in ("date", "created_time", "last_edited_time"):
             end_key = f"{key} (end)"
-            if end_key not in types_map:
+            if end_key not in types_map and end_key not in real_keys:
                 types_map[end_key] = "datetime"
                 added.append(f"{end_key}=datetime")
 
