@@ -1224,7 +1224,11 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
     "<name> <hex>.html" dupes). Skip them; copy only true attachments.
 
     A name is child-node content iff it is one of:
-      - an "*.html" file (a node, converted to its own note);
+      - a "<Title> <32-hex>.html" file (a node, converted to its own note) —
+        matched by NOTION_ID_RE, NOT bare ".html". A saved web page or other
+        genuine HTML attachment sitting alongside real node content (e.g.
+        "some-page/index.html") has no Notion-id in its name and must survive
+        (B2: a blanket ".html" filter here used to drop it);
       - a directory with a sibling "<name>.html" in the same listing (the node's
         attachment folder); or
       - a directory that itself contains "*.html" files (a nested database
@@ -1249,7 +1253,7 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
     ignored: Set[str] = set()
     for name in names:
         child = os.path.join(dir_path, name)
-        if name.lower().endswith(".html"):
+        if name.lower().endswith(".html") and extract_notion_id(name):
             ignored.add(name)
         elif (name.lower() + ".html") in lower_names and os.path.isdir(child):
             ignored.add(name)
