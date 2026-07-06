@@ -2335,6 +2335,10 @@ def run_conversion(
     """
     src = Path(src).expanduser().resolve()
     out_root = Path(out_root).expanduser().resolve()
+    if not src.exists():
+        raise FileNotFoundError(f"Notion export path does not exist: {src}")
+    if not src.is_dir():
+        raise NotADirectoryError(f"Notion export path is not a directory: {src}")
     if not dry_run:
         out_root.mkdir(parents=True, exist_ok=True)
 
@@ -2351,6 +2355,14 @@ def run_conversion(
         f"{len(databases)} database(s) at any depth; "
         f"{len(pages)} standalone page(s)."
     )
+    no_content_found = n_db_entries == 0 and len(pages) == 0
+    if no_content_found:
+        print(
+            f"WARNING: no Notion content found in {src} — 0 database entries and "
+            "0 standalone pages were discovered. This is a valid but empty "
+            "conversion; check that the export path is correct if this is "
+            "unexpected."
+        )
     if db_name and len(databases) > 1:
         print(
             f"WARNING: --db-name was given but {len(databases)} databases were "
@@ -2570,6 +2582,7 @@ def run_conversion(
         "dry_run": dry_run,
         "warnings": total_warnings,
         "overwrite_log": overwrite_log,
+        "no_content_found": no_content_found,
     }
     _emit_conversion_report(summary, src, out_root)
     return summary

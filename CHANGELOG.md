@@ -4,6 +4,18 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-07-06 — K1: `run_conversion` validates its own input path; "nothing found" made loud
+
+The README documents `run_conversion` as "the same function the CLI calls," but only `main()` actually checked `src.is_dir()` before calling it — `run_conversion` itself had no guard. A library caller (the exact use case the README's "Library usage" section demonstrates) passing a nonexistent, empty, or non-Notion directory got a fake "successful empty conversion": a normal summary dict, a `_conversion_report.md`, and a `.base` file, with no error and no warning. This directly contradicts the CLI/library equivalence the README claims, and is the same underlying gap the 2026-07-06 red-team panel flagged as Q2 (a non-Notion directory "succeeds" silently) — Q2 was scoped as a `run_conversion`-internals issue; making the function public without a guard is what turned it from a cosmetic wart into a real contract violation.
+
+**Fix:**
+- `run_conversion` now raises `FileNotFoundError` for a `src` that doesn't exist, and `NotADirectoryError` for a `src` that exists but isn't a directory — checked at the very top of the function, before any scanning/writing happens. `main()`'s existing `is_dir()` pre-check already produces a clean `ERROR: ... is not a directory.` + `sys.exit(1)` for both cases (nonexistent paths fail `is_dir()` too), so CLI behavior is unchanged — verified no traceback reaches the terminal for a bad path.
+- A directory that exists but has genuinely nothing to convert (empty, or full of non-Notion `.html`) is NOT an error — `run_conversion` still returns normally. But the "0 database entries AND 0 standalone pages" case now prints an explicit `WARNING: no Notion content found in <path>...` line and sets `summary["no_content_found"] = True`, so a library caller can detect the "nothing found" outcome without diffing entry/page counts against zero. This is the same shape Q2's non-Notion-directory case actually produces, so Q2's TODO row is updated to PARTIALLY FIXED (the "wrong folder entirely" case is now loud; a stray non-node `.html` alongside real content is still silently dropped — unchanged, separate gap).
+
+New test file `test_run_conversion_input_validation.py`: nonexistent path raises `FileNotFoundError`; a file-not-directory path raises `NotADirectoryError`; a valid empty directory does not raise and sets `no_content_found`; the CLI subprocess still exits non-zero with a clean `ERROR:` message (no traceback) for a bad path. Full suite grown from 236 to 240.
+
+---
+
 ## 2026-07-06 — J1: definitive fix — replace only the annotation node, never an ancestor wrapper
 
 Four consecutive red-team rounds (G3, H1, I1, and a fifth round below) each found a NEW silent-data-loss or crash bug in `_convert_equations`'s inline-equation path, every time in the same place: decomposing/replacing some ANCESTOR of the `<annotation>` node (a `<span>` or `<math>` wrapper), selected by a "is this wrapper exclusively scoped to one equation" heuristic. Each round's fix made the heuristic stricter; each round a new markup shape slipped past it. Patching the heuristic again was judged the wrong move — the entire approach (mutate an ancestor at all) is the bug class.

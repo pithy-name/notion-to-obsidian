@@ -59,6 +59,8 @@ print(summary["total_entries"], "entries written")
 
 `run_conversion` is the same function the CLI calls — see its docstring in `src/notion_to_obsidian/notion_db_to_obsidian.py` for the full parameter list (attachment mode, `--force`/`--dry-run` equivalents, etc.) and the summary dict's shape.
 
+`run_conversion` validates its `src` path itself (the CLI's check isn't the only guard): a nonexistent path raises `FileNotFoundError`, and an existing path that isn't a directory raises `NotADirectoryError`. A valid-but-empty export directory does **not** raise (a legitimate empty conversion) — instead the returned summary dict carries `summary["no_content_found"] == True` and a warning is printed, so a library caller can detect "nothing to convert" without mistaking it for a real conversion.
+
 ## Current tool
 
 ### `src/notion_to_obsidian/notion_db_to_obsidian.py`

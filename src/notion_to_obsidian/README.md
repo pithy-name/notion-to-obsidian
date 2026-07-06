@@ -482,13 +482,20 @@ a working task list, but the summary here is the durable public record.
   warning is logged. The persisted `_conversion_report.md` also
   overstates the per-database entry count in this case (it reports the
   pre-filter count). Found by the 2026-07-06 red-team panel; deferred.
-- **Pointing the converter at a non-Notion-export directory silently
-  "succeeds" (Q2).** You get exit 0, `Found 0 entries... Done.`, and any
-  generic `.html` file in that directory is neither converted (it matches
-  no node shape) nor copied as an orphan attachment (the orphan pass
-  skips `.html` unconditionally) — a wrong-folder run looks like a clean
-  no-op instead of an error. Found by the 2026-07-06 red-team panel;
-  deferred.
+- **Pointing the converter at a non-Notion-export directory used to
+  silently "succeed" (Q2, partially fixed).** `run_conversion` now detects
+  the "0 database entries AND 0 standalone pages found" case — the shape a
+  non-Notion directory actually produces — and prints an explicit
+  `WARNING: no Notion content found in <path>...` line, plus sets
+  `summary["no_content_found"] = True` so a library caller can check for it
+  without diffing file counts. It still exits 0 (a genuinely empty export
+  directory is a legitimate, non-error input), but the outcome is now loud
+  and machine-detectable instead of looking identical to a real
+  conversion. Remaining gap: a stray non-node `.html` file sitting
+  *alongside* real content that WAS found is still silently dropped (not
+  converted, not copied as an orphan) — this warning only fires on the
+  all-zero case. Found by the 2026-07-06 red-team panel; the all-zero case
+  fixed alongside K1 (`run_conversion` input validation).
 - **An uncaught mid-run exception loses the accumulated report (Q3,
   reachability unconfirmed).** `_emit_conversion_report` only runs at the
   very end of `run_conversion`; an exception anywhere earlier (e.g. inside
