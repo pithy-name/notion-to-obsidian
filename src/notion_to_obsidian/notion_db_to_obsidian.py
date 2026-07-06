@@ -1892,7 +1892,12 @@ def write_entry(
     # case; the .base embed + entry list still follow directly under the
     # page's own H1.
     for od in (owned_dbs or []):
-        if od["name"] != entry["title"]:
+        # F9 (B11 exact-match gap): Notion index-page titles and database
+        # names commonly drift in case/markdown-heading-hash/whitespace only
+        # ("# Animals" page title vs "## animals " db name) while still
+        # being the "same name" for dedup purposes. An exact `!=` compare
+        # missed those and printed the redundant heading anyway.
+        if od["name"].strip().casefold() != entry["title"].strip().casefold():
             contents += "\n## " + od["name"] + "\n"
         contents += "\n![[" + od["base_name"] + ".base]]\n"
         if od.get("children"):

@@ -53,6 +53,22 @@ class OwnedDbHeadingDedup(unittest.TestCase):
         self.assertIn("# Field Guide", text)
         self.assertIn("## Steps", text)
 
+    def test_case_insensitive_match_omits_redundant_heading(self):
+        # F9 (B11 exact-match gap): "# Animals" page title vs "## animals" db
+        # name is the SAME name modulo case — the exact `!=` compare treated
+        # them as different and kept the redundant heading.
+        text = self._write("Animals", "animals")
+        self.assertNotIn("## animals", text)
+        self.assertIn("\n# Animals\n", text)
+        self.assertIn("![[animals.base]]", text)
+
+    def test_whitespace_normalized_match_omits_redundant_heading(self):
+        # "Notes" vs " Notes " (stray leading/trailing whitespace) is also
+        # the same name for dedup purposes.
+        text = self._write("Notes", " Notes ")
+        self.assertNotIn("##  Notes ", text)
+        self.assertIn("\n# Notes\n", text)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
