@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-_DIR = Path(__file__).parent
+_DIR = Path(__file__).parent.parent
 
 
 def _load(name, filename):

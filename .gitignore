@@ -8,3 +8,7 @@ test-output/
 CLAUDE.local.md
 TODO.md
 docs/superpowers/
+.venv*/
+*.egg-info/
+build/
+dist/
