@@ -1956,6 +1956,7 @@ def copy_orphaned_files(
     *,
     overwrite_log: List[str],
     dry_run: bool = False,
+    dir_out_overrides: Optional[Dict[Path, Path]] = None,
 ) -> int:
     """Copy non-HTML source files that no node's attachment copy reaches.
 
@@ -1984,9 +1985,24 @@ def copy_orphaned_files(
     logged. Re-runs are stable because the disambiguated name is reused when it
     already holds an identical copy.
 
+    `dir_out_overrides` (F1b) maps a RESOLVED source directory (a database's
+    `entries_folder`) to the disambiguated `out_dir` `run_conversion` already
+    picked for it (the `db_out_dir_claims` map, keyed by source dir instead of
+    output dir). Two same-named sibling databases both hex-strip to the same
+    plain `mirror_output_dir` result, so without this override a loose orphan
+    file physically inside the SECOND same-named database's entries folder
+    would resolve to the FIRST database's output dir and only be rescued by
+    the byte-diff collision-rename fallback above — landing next to the wrong
+    database's entries instead of its own. When a file's parent (or an
+    ancestor of it, for files nested deeper inside that folder) matches an
+    override, the override's out_dir is used as the base instead of the plain
+    hex-stripped mirror, preserving any sub-path between the matched directory
+    and the file's actual parent.
+
     Returns the count of files copied (or that would be copied, in dry-run).
     """
     src_resolved = src.resolve()
+    dir_out_overrides = dir_out_overrides or {}
     claimed: Set[Path] = set()            # dests already taken this run (dry too)
     copied = 0
     for path in sorted(src.rglob("*")):
@@ -2012,7 +2028,25 @@ def copy_orphaned_files(
         # file" if this run already claimed it, or it exists on disk with
         # different bytes. Two source folders can hex-strip to the same output
         # dir, so disambiguate rather than overwrite — never silently drop.
-        base = mirror_output_dir(path.parent, src, out_root) / path.name
+        #
+        # F1b: prefer an already-disambiguated dir_out_overrides mapping over
+        # the plain hex-stripped mirror. Walk from path.parent up to
+        # src_resolved looking for the NEAREST ancestor with an override (a
+        # database's entries_folder); if found, rebuild the destination as
+        # that override's out_dir plus whatever sub-path sits between the
+        # matched ancestor and the file's actual parent.
+        parent_resolved = path.parent.resolve()
+        override_base: Optional[Path] = None
+        anc = parent_resolved
+        while True:
+            if anc in dir_out_overrides:
+                sub_parts = parent_resolved.relative_to(anc).parts
+                override_base = dir_out_overrides[anc].joinpath(*sub_parts)
+                break
+            if anc == src_resolved or anc.parent == anc:
+                break
+            anc = anc.parent
+        base = (override_base or mirror_output_dir(path.parent, src, out_root)) / path.name
         dest, attempt, clashed = base, 1, False
         while dest in claimed or (dest.exists() and not filecmp.cmp(path, dest, shallow=False)):
             clashed = True
@@ -2240,8 +2274,17 @@ def run_conversion(
         attach_dir = nd["parsed"]["path"].with_suffix("")
         if attach_dir.is_dir():
             covered_dirs.add(attach_dir.resolve())
+    # F1b: a database's entries_folder may have been disambiguated away from
+    # the plain hex-stripped mirror path (db_out_dir_claims, B4). Feed that
+    # same mapping to the orphan pass so a loose file sitting directly in a
+    # same-named sibling database's entries folder lands in ITS db's
+    # disambiguated out_dir, not whichever same-named db claimed the plain dir.
+    db_dir_out_overrides: Dict[Path, Path] = {
+        db["entries_folder"].resolve(): db["out_dir"] for db in databases
+    }
     n_orphaned = copy_orphaned_files(
-        src, out_root, covered_dirs, overwrite_log=overwrite_log, dry_run=dry_run
+        src, out_root, covered_dirs, overwrite_log=overwrite_log, dry_run=dry_run,
+        dir_out_overrides=db_dir_out_overrides,
     )
     if n_orphaned:
         print(
