@@ -829,12 +829,36 @@ def _convert_equations(
 
     Minimal viable per the investigation behind B7: preserve the LaTeX
     source as text. Block equations (the documented, confirmed export shape)
-    become `$$tex$$` on their own line. Any remaining bare
-    `<annotation encoding="application/x-tex">` NOT inside a block-equation
-    figure (Notion's inline-equation shape isn't confirmed against a real
-    export sample) is treated as inline and wrapped `$tex$` — a best-effort
-    fallback so an inline equation is never silently dropped even if its
-    exact wrapper markup differs from what's assumed here.
+    become `$$tex$$` on their own line, by replacing the whole
+    `<figure class="equation">` (a block figure is a self-contained
+    single-equation unit — one figure = one equation, no sharing observed —
+    so whole-figure replacement is safe).
+
+    Any remaining bare `<annotation encoding="application/x-tex">` NOT
+    inside a block-equation figure (Notion's inline-equation shape isn't
+    confirmed against a real export sample) is treated as inline and
+    wrapped `$tex$` — a best-effort fallback so an inline equation is never
+    silently dropped even if its exact wrapper markup differs from what's
+    assumed here.
+
+    J1 (round-5 red-team, definitive fix): FOUR consecutive red-team rounds
+    (G3, H1, I1, and round 5) each found a NEW silent-data-loss or crash bug
+    in decompose/replace-the-ancestor-wrapper logic for inline equations —
+    sibling prose deleted, a sibling equation deleted, a crash on a detached
+    node, and (round 5) N-1 of N equations sharing one `<math>` silently
+    lost under realistic MathJax `<semantics>/<mrow>` nesting, because
+    mutating an ancestor mid-iteration corrupted the live tree the loop was
+    still scoping against. Rather than patch the scoping heuristic again,
+    the inline path now mutates ONLY the `<annotation>` node itself — never
+    any ancestor (`<math>`, `<span>`, `<semantics>`, ...). This is safe by
+    construction: with no ancestor ever touched, there is no wrapper-scoping
+    decision to get wrong and no mutation-during-iteration hazard,
+    regardless of markup shape, nesting depth, or how many equations share a
+    wrapper. Trade-off: sibling presentation MathML (`<mrow>`, `<mi>`,
+    `<mo>`, ...) is left in the tree and markdownify may render it as
+    adjacent plain-text "residue" next to the `$tex$` — cosmetic, and
+    strictly preferable to the silent data loss the wrapper-deletion
+    approach caused; see README Known Issues.
 
     B7 (escaping): the raw `$$tex$$` / `$tex$` text cannot be inserted
     directly into the soup — the WHOLE body still goes through markdownify
@@ -852,100 +876,6 @@ def _convert_equations(
     """
     def _placeholder() -> str:
         return f"NOTIONEQPLACEHOLDER{len(equation_map)}ENDPLACEHOLDER"
-
-    # I1 (round-4 red-team): tag names MathJax/Notion use for a single
-    # equation's own rendered presentation (symbols, fractions, rows, table
-    # layout, etc). Text nested ONLY inside these (relative to the wrapper)
-    # is this equation's own MathML, not unrelated content -- see
-    # `_is_equation_scoped_wrapper`.
-    _MATHML_PRESENTATION_TAGS = frozenset({
-        "mi", "mn", "mo", "mtext", "mspace", "ms", "mrow", "mfrac", "msqrt",
-        "mroot", "mstyle", "merror", "mpadded", "mphantom", "mfenced",
-        "menclose", "msub", "msup", "msubsup", "munder", "mover",
-        "munderover", "mmultiscripts", "mtable", "mtr", "mtd", "mlabeledtr",
-        "maligngroup", "malignmark", "semantics", "annotation-xml",
-    })
-
-    def _is_equation_scoped_wrapper(wrapper: Tag, annotation: Tag) -> bool:
-        """
-        Shared core (I1, round-4 red-team) for both the `<span>` and
-        `<math>` wrapper checks: is `wrapper` safe to decompose/replace
-        whole, as this ONE equation's exclusive container?
-
-        Unsafe if it holds (1) any OTHER TeX annotation, or (2) any
-        non-whitespace text that is not this equation's own presentation
-        MathML -- i.e. text that sits directly in the wrapper with no
-        presentation-element parent, or nested under a non-presentation
-        element (real prose, not equation markup).
-        """
-        other_annotations = [
-            a for a in wrapper.find_all("annotation", attrs={"encoding": "application/x-tex"})
-            if a is not annotation
-        ]
-        if other_annotations:
-            return False
-        for descendant in wrapper.descendants:
-            if not (isinstance(descendant, NavigableString) and descendant.strip()):
-                continue
-            if annotation in descendant.parents:
-                continue
-            if descendant.parent is wrapper:
-                # Raw text with no presentation-element parent at all --
-                # never legitimate equation markup.
-                return False
-            ancestor = descendant.parent
-            while ancestor is not None and ancestor is not wrapper:
-                if ancestor.name not in _MATHML_PRESENTATION_TAGS:
-                    return False
-                ancestor = ancestor.parent
-        return True
-
-    def _is_equation_scoped_span(span: Tag, annotation: Tag) -> bool:
-        """
-        H1 (round-3 red-team): is `span` safe to decompose/replace whole, as
-        this ONE equation's exclusive wrapper?
-
-        `find_parent(["math", "span"])` (the pre-H1 approach) returns the
-        NEAREST span regardless of what else it wraps. Two confirmed failure
-        shapes: (a) two <annotation> siblings share one span -- decomposing
-        on the first destroys the second, real equation; (b) the nearest
-        span wraps unrelated real prose -- decomposing deletes that prose
-        too. A span is only safe to treat as this equation's own wrapper if
-        (1) its class marks it equation/math-specific, AND (2) it passes the
-        shared `_is_equation_scoped_wrapper` check.
-        """
-        classes = " ".join(span.get("class") or []).lower()
-        if "equation" not in classes and "math" not in classes:
-            return False
-        return _is_equation_scoped_wrapper(span, annotation)
-
-    def _safe_remove(
-        wrapper: Tag,
-        *,
-        replace_text: Optional[str],
-        context: str,
-    ) -> None:
-        """
-        I1 (round-4 red-team) defense-in-depth: decompose (`replace_text is
-        None`) or `replace_with(NavigableString(replace_text))` the given
-        wrapper, guarding against it having already been detached from the
-        tree by a prior iteration (e.g. a shared ancestor already removed
-        while processing an earlier annotation on the same page). A
-        detached target degrades to a no-op + warning instead of raising
-        `ValueError`.
-        """
-        if wrapper.parent is None:
-            if warnings is not None:
-                warnings.append(
-                    f"skipped {context}: its container was already removed "
-                    "while processing an earlier equation on the same page "
-                    "(no data was written for this occurrence)."
-                )
-            return
-        if replace_text is None:
-            wrapper.decompose()
-        else:
-            wrapper.replace_with(NavigableString(replace_text))
 
     for fig in body_tag.find_all("figure", class_=lambda c: c and "equation" in c):
         annotation = fig.find("annotation", attrs={"encoding": "application/x-tex"})
@@ -967,49 +897,42 @@ def _convert_equations(
     # Any TeX annotation not already consumed by the block-equation pass
     # above (i.e. not inside a <figure class="equation">) — best-effort
     # inline handling.
+    # J1 (round-5 red-team, CRITICAL regression of I1): every prior approach
+    # here (G3 through I1) decomposed/replaced some ANCESTOR of the
+    # <annotation> (a <span> or <math> wrapper), selected by a "is this
+    # wrapper exclusively scoped to one equation" heuristic. Each round found
+    # a NEW markup shape that heuristic mis-scoped -- most recently (round 5)
+    # realistic MathJax nesting where N equations share one <math>, each in
+    # its own `<semantics><mrow>...</mrow><annotation>...</annotation
+    # ></semantics>`: decomposing/replacing the first equation's ancestor
+    # mutates the tree the loop is still iterating, so the live re-check for
+    # the next annotation sees a corrupted/partial tree -- N-1 of N
+    # equations silently lost.
+    #
+    # J1 eliminates the entire bug class by construction: touch ONLY the
+    # `<annotation>` node being iterated, NEVER any ancestor. There is no
+    # wrapper-scoping decision left to get wrong, and no ancestor is ever
+    # mutated, so there is no mutation-during-iteration hazard -- this holds
+    # regardless of markup shape, nesting depth, or how many equations share
+    # a `<math>`/`<span>`. The trade-off: sibling presentation MathML
+    # (`<mrow>`, `<mi>`, `<mo>`, ...) is left in the tree and markdownify may
+    # render it as adjacent plain-text "residue" next to the `$tex$`. This is
+    # cosmetic, and strictly preferable to the silent DATA LOSS the
+    # wrapper-deletion approach caused across four red-team rounds; see
+    # README Known Issues.
     for annotation in body_tag.find_all("annotation", attrs={"encoding": "application/x-tex"}):
         tex = annotation.get_text(strip=True)
-        # H1 (round-3 red-team, over-deletion regression of G3), extended by
-        # I1 (round-4 red-team -- H1 only guarded the <span> branch, leaving
-        # <math> unconditional again): the old
-        # `annotation.find_parent(["math", "span"]) or annotation` grabbed
-        # the NEAREST span/math ancestor unconditionally -- which can be
-        # shared by unrelated content (a second annotation, or real prose)
-        # and its blast radius then deletes/replaces that unrelated content
-        # too (or, for <math>, crashes on a since-detached shared ancestor --
-        # see `_safe_remove`). Only ever decompose/replace a wrapper that is
-        # unambiguously scoped to this ONE equation:
-        #   1. a <math> ancestor, if any, but ONLY if it holds no content
-        #      beyond this one annotation's own MathML/presentation nodes
-        #      (see `_is_equation_scoped_wrapper`) -- a <math> CAN be shared
-        #      by a second annotation or unrelated prose, same as a span; or
-        #   2. a <span> ancestor, but ONLY if its class marks it as
-        #      equation/math-specific AND it holds no content beyond this
-        #      annotation's own nodes (see _is_equation_scoped_span); or
-        #   3. otherwise, fall back to the annotation node itself -- the
-        #      old (pre-G3) narrow behavior. This accepts a narrow MathML-
-        #      residue leak in that ambiguous case rather than risk
-        #      deleting real content; see README Known Issues.
-        wrapper = annotation.find_parent("math")
-        if wrapper is not None and not _is_equation_scoped_wrapper(wrapper, annotation):
-            wrapper = None
-        if wrapper is None:
-            span_ancestor = annotation.find_parent("span")
-            if span_ancestor is not None and _is_equation_scoped_span(span_ancestor, annotation):
-                wrapper = span_ancestor
-        if wrapper is None:
-            wrapper = annotation
         if not tex:
             if warnings is not None:
                 warnings.append(
                     "dropped an inline equation annotation with empty TeX "
                     "(nothing to preserve)."
                 )
-            _safe_remove(wrapper, replace_text=None, context="an empty inline equation wrapper")
+            annotation.decompose()
             continue
         placeholder = _placeholder()
         equation_map[placeholder] = f"${tex}$"
-        _safe_remove(wrapper, replace_text=placeholder, context="an inline equation wrapper")
+        annotation.replace_with(NavigableString(placeholder))
 
 
 def _convert_iframes(body_tag: Tag) -> None:
