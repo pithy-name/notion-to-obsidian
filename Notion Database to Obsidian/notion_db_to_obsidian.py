@@ -805,6 +805,7 @@ def convert_body(
     new_attachment_dir_basename: Optional[str],
     wikilink_map: Dict[str, str],
     inplace_link_prefix: Optional[str] = None,
+    warnings: Optional[List[str]] = None,
 ) -> str:
     """
     Convert the <div class="page-body"> tag into Markdown.
@@ -815,6 +816,10 @@ def convert_body(
       - Replace local-file source <figure> blocks with [filename](path) links.
       - Rewrite <a href="OldFolder%20uuid/file.pdf"> → "NewFolder/file.pdf".
       - Rewrite <a href="OtherEntry%20uuid.html">Title</a> → [[Title]].
+      - An in-page `#fragment` anchor, or an ".html" link that never resolves
+        to a node in `wikilink_map` (B6: e.g. it targets a DIFFERENT export,
+        or the target's filename diverged) is converted to plain visible
+        text — never left as a raw, broken ".html"/"#fragment" href.
 
     `inplace_link_prefix` (inplace attachment mode only): every local href in a
     Notion export is relative to the shared source-entries folder — whether it
@@ -823,6 +828,9 @@ def convert_body(
     onto every local href, so same-entry AND cross-entry attachments resolve to
     the real files in the source export. When None, the copy/symlink behavior
     applies (only this entry's own folder is rewritten).
+
+    `warnings`, if given, gets one line appended per unresolved link (fragment
+    or cross-export ".html") converted to plain text.
     """
     if body_tag is None:
         return ""
@@ -868,8 +876,21 @@ def convert_body(
             continue
         decoded = unquote(href)
 
-        # External or anchor links: leave alone (NEVER visited).
-        if decoded.startswith(("http://", "https://", "mailto:", "#")):
+        # External links: leave alone (NEVER visited).
+        if decoded.startswith(("http://", "https://", "mailto:")):
+            continue
+
+        # In-page "#fragment" heading links: this converter doesn't track
+        # Notion's heading ids, so the anchor can never resolve in Obsidian —
+        # it would render as a raw, permanently-broken `#fragment` href.
+        # Drop the link, keep the visible text (B6).
+        if decoded.startswith("#"):
+            if warnings is not None:
+                warnings.append(
+                    f"unresolved in-page anchor link {href!r} converted to "
+                    "plain text (heading ids are not tracked)."
+                )
+            a.replace_with(a.get_text())
             continue
 
         # Link to another node anywhere in the export -> [[wikilink]].
@@ -886,6 +907,20 @@ def convert_body(
         decoded_base = decoded.rsplit("/", 1)[-1]
         if decoded_base != decoded and decoded_base in wikilink_map:
             a.replace_with(f"[[{wikilink_map[decoded_base]}]]")
+            continue
+
+        # An ".html" href that matched no node in this export at all (B6) —
+        # it points into a DIFFERENT export, or the target's filename
+        # diverged from this href. Left alone it would be a raw, dead
+        # ".html" path in the output; there is nothing to resolve it to, so
+        # convert to plain visible text rather than ship a broken link.
+        if decoded_base.lower().endswith(".html"):
+            if warnings is not None:
+                warnings.append(
+                    f"unresolved cross-export link {href!r} converted to "
+                    "plain text (no matching node in this export)."
+                )
+            a.replace_with(a.get_text())
             continue
 
         # Inplace mode: prefix the relpath to the source export onto every local
@@ -1617,6 +1652,7 @@ def write_entry(
         new_attachment_dir_basename=new_attach_basename,
         wikilink_map=wikilink_map,
         inplace_link_prefix=inplace_link_prefix,
+        warnings=warnings,
     )
 
     # Append inline tables for any nested databases owned by this entry.
