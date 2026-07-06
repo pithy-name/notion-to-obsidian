@@ -2107,6 +2107,7 @@ def discover_tree(src: Path) -> Dict[str, Any]:
             return None
         return extract_notion_id(parent.name)
 
+    tree_warnings: List[str] = []
     databases: List[Dict[str, Any]] = []
     for ef, paths in entries_by_folder.items():
         h = extract_notion_id(ef.name)
@@ -2119,6 +2120,30 @@ def discover_tree(src: Path) -> Dict[str, Any]:
             "owner_hex": owner_hex_of(ef),
             "depth": len(ef.relative_to(src).parts),
         })
+
+    # M1: a database whose entries_folder IS `src` itself is not a real
+    # database — classify_html's naive `class="properties"` substring match
+    # can misclassify a loose top-level page as an "entry" (e.g. a standalone
+    # export of a single DB row, landing directly under `src` with no parent
+    # entries-folder — an empty `<table class="properties">` is enough to
+    # trip the match). Such an "entry" groups by html.parent == src, so
+    # downstream `mirror_output_dir(entries_folder.parent, src, out_root)`
+    # would need to go ABOVE src_root and raise ValueError, crashing the
+    # whole run. There is no parent structure to nest under here, so treat
+    # each such entry as a standalone page (placed at the output root by its
+    # own filename) instead — same fate as any other loose top-level page.
+    # No silent drop: still warned so it's visible in the run's report.
+    loose_databases = [db for db in databases if db["entries_folder"] == src]
+    if loose_databases:
+        databases = [db for db in databases if db["entries_folder"] != src]
+        for db in loose_databases:
+            for ep in db["entry_paths"]:
+                tree_warnings.append(
+                    f"Loose top-level file classified as a database entry "
+                    f"with no parent structure; converted as a standalone "
+                    f"page instead: {ep}"
+                )
+                page_paths.append(ep)
 
     # A "parent" page (collection-content) is only a database's index when its
     # hex matches that database's entries-folder. A parent page whose hex matches
@@ -2141,7 +2166,7 @@ def discover_tree(src: Path) -> Dict[str, Any]:
             "depth": len(p.relative_to(src).parts) - 1,
         })
 
-    return {"databases": databases, "pages": pages}
+    return {"databases": databases, "pages": pages, "warnings": tree_warnings}
 
 
 def assign_unique_names(nodes: List[Dict[str, Any]]) -> None:
@@ -2457,7 +2482,7 @@ def run_conversion(
         if db["owner_hex"] and db["hex"]:
             nested_hexes_by_owner_uuid[hex_to_uuid(db["owner_hex"])].add(db["hex"])
 
-    total_warnings: List[str] = []
+    total_warnings: List[str] = list(tree["warnings"])
     overwrite_log: List[str] = []
 
     # Assign each database a "home" note that embeds its base + lists its entries;

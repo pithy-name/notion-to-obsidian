@@ -520,6 +520,37 @@ a working task list, but the summary here is the durable public record.
   don't affect the process exit code, so a scripted/CI caller can't
   detect a partial failure from the exit status alone. Pre-existing;
   found by the 2026-07-06 red-team panel; deferred.
+- **A loose top-level file that merely LOOKS like a database entry used to
+  crash the entire run (M1, fixed).** A single top-level `.html` directly
+  under the export root whose markup contains the substring
+  `class="properties"` (e.g. an empty properties table — the shape
+  produced when a single Notion DB row is exported standalone) was
+  misclassified as an "entry" by `classify_html`'s naive substring match,
+  grouped into a fake database whose `entries_folder` was `src` itself,
+  and then crashed the whole conversion with an unhandled `ValueError`
+  (`mirror_output_dir` computing a path outside `src`) — no traceback
+  caught, no output, no report. Fixed: `discover_tree` now recognizes an
+  `entries_folder == src` as structurally not a real database (nothing to
+  nest under) and instead converts each such entry as a **standalone page
+  at the output root**, by its own filename, with an explicit warning
+  naming the file in `_conversion_report.md`. `classify_html`'s
+  classification heuristic itself was intentionally left unchanged — that
+  ambiguity (a loose file substring-matching the properties marker without
+  being a real DB row) is the same class of gap as Q1 above, just no
+  longer fatal. Found by the 2026-07-06 round-10 red-team; fixed same day.
+  `test_loose_toplevel_entry.py`.
+- **A Notion property literally named `Aliases`/`aliases`/`cssclasses`
+  round-trips verbatim into frontmatter under that literal key (M2,
+  unconfirmed).** Obsidian treats `aliases` and `cssclasses` as reserved
+  frontmatter keys — `aliases` in particular drives note-linking identity.
+  Unlike the `tags` key (which already gets case-insensitive matching plus
+  sanitization, see the comment in `notion_db_to_obsidian.py` ~line 1920),
+  neither key gets any special handling: a Notion property of that exact
+  name lands verbatim in frontmatter, which could silently make a note
+  answerable to unintended aliases. Plausible but **not verified against a
+  real Obsidian instance**. Found by the 2026-07-06 round-10 red-team;
+  deferred as a separate, larger scoped change (extending the tags-style
+  guard to other reserved keys). See TODO.md.
 
 ### Maintenance
 
