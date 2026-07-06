@@ -2561,6 +2561,17 @@ def _emit_conversion_report(
         report.write_text("\n".join(lines) + "\n", encoding="utf-8")
         print(f"Wrote report: {report}")
         print(f"Output: {out_root}")
+        # F6: total_warnings (type-drift, unresolved links, filename
+        # collisions, dropped equations, ...) was written to
+        # _conversion_report.md but never mentioned on the console — not even
+        # a count — unlike overwrite_log's WARN events just below, which DO
+        # get a console line. A user running for real, not reading the
+        # report file, had no signal anything needed attention.
+        if total_warnings:
+            print(
+                f"  {len(total_warnings)} conversion warning(s) — "
+                "see _conversion_report.md."
+            )
         # B10: report each EVENT KIND with its own line — an additive schema
         # merge and a WARN are neither an overwrite nor a preserved file, and
         # must not be folded into the "PRESERVED N existing file(s)" count.
