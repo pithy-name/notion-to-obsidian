@@ -88,6 +88,102 @@ class WriteEntryEmitsCompanionEndProperty(unittest.TestCase):
         self.assertNotIn("(end)", text)
 
 
+class RealEndPropertyNeverClobbered(unittest.TestCase):
+    """
+    F5 (B9 collision): the synthetic "<Prop> (end)" key must not clobber, or
+    be silently shadowed by, a REAL Notion property that happens to be named
+    exactly that. Fixture: a date-range property "Duration" AND a real,
+    independent property literally named "Duration (end)" in the same
+    schema. Before the fix, `write_entry` did a blind
+    `frontmatter[f"{key} (end)"] = end_value` with no existence check, so
+    whichever assignment ran last (schema iteration order) won silently —
+    either the real property's value was overwritten by the synthetic range
+    end, or (depending on order) the real value happened to survive with no
+    signal that the range's end date was dropped instead. Either way it's
+    unpredictable data loss with no warning.
+    """
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._td.name)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _run(self, real_end_value: str):
+        src = self.tmp / "src"; src.mkdir(exist_ok=True)
+        out = self.tmp / "out"; out.mkdir(exist_ok=True)
+        entry = {
+            "path": src / "Item aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.html",
+            "title": "Item",
+            "notion_uuid": None,
+            "properties": [
+                ("Duration", "date", _date_td("January 2, 2024 → January 5, 2024")),
+                ("Duration (end)", "text", _date_td(real_end_value)),
+            ],
+            "body": None,
+        }
+        schema = OrderedDict()
+        schema["Duration"] = {"types": Counter({"date": 1}), "key": "Duration"}
+        schema["Duration (end)"] = {"types": Counter({"text": 1}), "key": "Duration (end)"}
+        _path, warnings = n.write_entry(
+            entry, out, schema, {}, {},
+            force=True, overwrite_log=[], attachment_mode="inplace", dry_run=False,
+        )
+        text = (out / "Item.md").read_text(encoding="utf-8")
+        return text, warnings
+
+    def test_real_end_property_value_survives(self):
+        text, warnings = self._run("not a date, a real value")
+        self.assertIn("not a date, a real value", text)
+        # The synthetic range-end date must NOT have overwritten it.
+        self.assertNotRegex(text, r"(?m)^Duration \(end\):\s*'?2024-01-05'?\s*$")
+
+    def test_collision_is_warned(self):
+        _text, warnings = self._run("not a date, a real value")
+        self.assertTrue(
+            any("Duration (end)" in w and "collis" in w.lower() for w in warnings),
+            f"expected a collision warning mentioning 'Duration (end)', got: {warnings}",
+        )
+
+    def test_real_end_property_survives_even_when_declared_first(self):
+        # Schema order is NOT the collision-safety mechanism — the real
+        # property must survive regardless of which schema position it's in.
+        # With the real "Duration (end)" declared BEFORE "Duration" (so it's
+        # written to frontmatter first), the unguarded blind-assignment bug
+        # would have the synthetic range-end value clobber it on the LATER
+        # "Duration" iteration — the actual data-loss direction of B9's gap
+        # (the other schema order merely happens to leave the real value
+        # surviving last, which is what test_real_end_property_value_survives
+        # exercises).
+        src = self.tmp / "src"; src.mkdir(exist_ok=True)
+        out = self.tmp / "out2"; out.mkdir(exist_ok=True)
+        entry = {
+            "path": src / "Item2 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.html",
+            "title": "Item2",
+            "notion_uuid": None,
+            "properties": [
+                ("Duration (end)", "text", _date_td("not a date, a real value")),
+                ("Duration", "date", _date_td("January 2, 2024 → January 5, 2024")),
+            ],
+            "body": None,
+        }
+        schema = OrderedDict()
+        schema["Duration (end)"] = {"types": Counter({"text": 1}), "key": "Duration (end)"}
+        schema["Duration"] = {"types": Counter({"date": 1}), "key": "Duration"}
+        _path, warnings = n.write_entry(
+            entry, out, schema, {}, {},
+            force=True, overwrite_log=[], attachment_mode="inplace", dry_run=False,
+        )
+        text = (out / "Item2.md").read_text(encoding="utf-8")
+        self.assertIn("not a date, a real value", text)
+        self.assertNotRegex(text, r"(?m)^Duration \(end\):\s*'?2024-01-05'?\s*$")
+        self.assertTrue(
+            any("Duration (end)" in w and "collis" in w.lower() for w in warnings),
+            f"expected a collision warning mentioning 'Duration (end)', got: {warnings}",
+        )
+
+
 class EmitTypesJsonRegistersEndKey(unittest.TestCase):
     def test_end_key_registered_as_datetime(self):
         td = tempfile.TemporaryDirectory()

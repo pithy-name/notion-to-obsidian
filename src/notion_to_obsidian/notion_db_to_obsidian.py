@@ -1755,6 +1755,14 @@ def write_entry(
         frontmatter["notion_uuid"] = entry["notion_uuid"]
     # Build a quick lookup for this entry's properties.
     entry_props: Dict[str, Tuple[str, Tag]] = {p[0]: (p[1], p[2]) for p in entry["properties"]}
+    # F5 (B9 collision): the synthetic "<Prop> (end)" key (below) must never
+    # clobber, or be silently shadowed by, a REAL property that happens to be
+    # named exactly that. Precompute every real schema key up front (schema
+    # order is independent of which property gets written first, so a
+    # forward-declared collision — a real "<Prop> (end)" property appearing
+    # LATER in schema order — needs this to be known before either is
+    # written, not discovered by checking frontmatter's current contents).
+    schema_keys = {i["key"] for i in schema.values()}
     for pname, info in schema.items():
         key = info["key"]
         # A property that is empty for THIS entry still appears in the YAML, as
@@ -1819,7 +1827,20 @@ def write_entry(
             raw_text = td.get_text(strip=True)
             end_value = parse_notion_date_range_end(raw_text)
             if end_value is not None:
-                frontmatter[f"{key} (end)"] = end_value
+                end_key = f"{key} (end)"
+                if end_key in schema_keys:
+                    # A REAL property is named exactly this — never overwrite
+                    # it with the synthetic range-end value, and never let it
+                    # silently mask the fact that the range's end date went
+                    # unwritten because of the name collision.
+                    warnings.append(
+                        f"{entry['title']!r}: property {pname!r} is a date range, "
+                        f"but its synthesized end-date key {end_key!r} has a "
+                        "name collision with a real property of that name; "
+                        "the range's end date was NOT written."
+                    )
+                else:
+                    frontmatter[end_key] = end_value
 
     # Strip inline snapshot tables Notion embeds for nested databases.
     if nested_db_folder_hexes and entry.get("body"):
