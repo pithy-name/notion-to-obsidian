@@ -25,6 +25,7 @@ import unittest
 from collections import Counter, OrderedDict
 from pathlib import Path
 
+import yaml
 from bs4 import BeautifulSoup
 import notion_db_to_obsidian as n
 
@@ -62,14 +63,23 @@ class MultivalueUnderNonSelectDominant(unittest.TestCase):
             force=True, overwrite_log=[], attachment_mode="inplace", dry_run=False,
         ), out
 
+    @staticmethod
+    def _frontmatter(text: str) -> dict:
+        # G6 (F13 backport): the original assertions here used assertIn/
+        # assertNotIn on raw text, which stays GREEN even if the fix
+        # regresses to a glued string ("Red, Blue" still contains "Red",
+        # doesn't contain "RedBlue"/"1234"). Parse the actual YAML
+        # frontmatter and assert list equality instead, matching the
+        # pattern F13 (0f109c6) applied to the sibling B8 test one commit
+        # later — never backported here until now.
+        fm_text = text.split("---", 2)[1]
+        return yaml.safe_load(fm_text)
+
     def test_dominant_checkbox_preserves_values_not_false(self):
         (_path, warnings), out = self._write("multi_select", "checkbox", ["Red", "Blue"])
         text = (out / "Item.md").read_text(encoding="utf-8")
-        self.assertIn("Red", text)
-        self.assertIn("Blue", text)
-        # The bug collapsed this to a bare boolean; guard against that exact
-        # regression shape (no "true"/"false" YAML scalar for Category).
-        self.assertNotRegex(text, r"(?im)^Category:\s*(true|false)\s*$")
+        frontmatter = self._frontmatter(text)
+        self.assertEqual(frontmatter["Category"], ["Red", "Blue"])
         self.assertTrue(
             any("Category" in w for w in warnings),
             "expected a schema-drift warning mentioning the property name",
@@ -78,10 +88,8 @@ class MultivalueUnderNonSelectDominant(unittest.TestCase):
     def test_dominant_date_preserves_values_not_glued(self):
         (_path, warnings), out = self._write("multi_select", "date", ["Red", "Blue"])
         text = (out / "Item.md").read_text(encoding="utf-8")
-        self.assertIn("Red", text)
-        self.assertIn("Blue", text)
-        # The bug glued the two spans with no separator into "RedBlue".
-        self.assertNotIn("RedBlue", text)
+        frontmatter = self._frontmatter(text)
+        self.assertEqual(frontmatter["Category"], ["Red", "Blue"])
         self.assertTrue(
             any("Category" in w for w in warnings),
             "expected a schema-drift warning mentioning the property name",
@@ -90,9 +98,8 @@ class MultivalueUnderNonSelectDominant(unittest.TestCase):
     def test_dominant_number_preserves_values_not_glued(self):
         (_path, warnings), out = self._write("multi_select", "number", ["12", "34"])
         text = (out / "Item.md").read_text(encoding="utf-8")
-        self.assertIn("12", text)
-        self.assertIn("34", text)
-        self.assertNotIn("1234", text)
+        frontmatter = self._frontmatter(text)
+        self.assertEqual(frontmatter["Category"], ["12", "34"])
 
 
 if __name__ == "__main__":
