@@ -2191,7 +2191,7 @@ def copy_orphaned_files(
     overwrite_log: List[str],
     dry_run: bool = False,
     dir_out_overrides: Optional[Dict[Path, Path]] = None,
-) -> int:
+) -> Tuple[int, int]:
     """Copy non-HTML source files that no node's attachment copy reaches.
 
     A Notion export can hold sections with NO entry HTML — a page exported as a
@@ -2233,12 +2233,22 @@ def copy_orphaned_files(
     hex-stripped mirror, preserving any sub-path between the matched directory
     and the file's actual parent.
 
-    Returns the count of files copied (or that would be copied, in dry-run).
+    Returns a `(copied, present)` tuple: `copied` is the count of files copied
+    (or that would be copied, in dry-run) THIS run; `present` is the total
+    count of orphaned source files that end up existing at their destination
+    once this run completes — `copied` plus files an earlier run already
+    placed (byte-identical, so this run skipped them as "nothing new to
+    do"). `copied` is what the console/report "N orphaned file(s) copied"
+    line means; `present` is the one to use for an "is the output vault
+    non-empty" signal — a re-run against the same src/out pair correctly
+    reports `copied == 0` (idempotent, no new work) but `present` still
+    reflects the orphaned content that is actually sitting in `out_root`.
     """
     src_resolved = src.resolve()
     dir_out_overrides = dir_out_overrides or {}
     claimed: Set[Path] = set()            # dests already taken this run (dry too)
     copied = 0
+    present = 0
     for path in sorted(src.rglob("*")):
         if not path.is_file():
             continue
@@ -2287,9 +2297,11 @@ def copy_orphaned_files(
             attempt += 1
             dest = base.with_name(f"{base.stem} ({attempt}){base.suffix}")
         if dest not in claimed and dest.exists():
-            continue                      # identical copy already on disk → done
+            present += 1                  # identical copy already on disk → done
+            continue
         claimed.add(dest)
         copied += 1
+        present += 1
         if clashed:
             overwrite_log.append(
                 f"COLLISION: orphaned file `{path.name}` mapped to an existing "
@@ -2303,7 +2315,7 @@ def copy_orphaned_files(
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, dest)
-    return copied
+    return copied, present
 
 
 def run_conversion(
@@ -2355,14 +2367,6 @@ def run_conversion(
         f"{len(databases)} database(s) at any depth; "
         f"{len(pages)} standalone page(s)."
     )
-    no_content_found = n_db_entries == 0 and len(pages) == 0
-    if no_content_found:
-        print(
-            f"WARNING: no Notion content found in {src} — 0 database entries and "
-            "0 standalone pages were discovered. This is a valid but empty "
-            "conversion; check that the export path is correct if this is "
-            "unexpected."
-        )
     if db_name and len(databases) > 1:
         print(
             f"WARNING: --db-name was given but {len(databases)} databases were "
@@ -2528,7 +2532,7 @@ def run_conversion(
     db_dir_out_overrides: Dict[Path, Path] = {
         db["entries_folder"].resolve(): db["out_dir"] for db in databases
     }
-    n_orphaned = copy_orphaned_files(
+    n_orphaned, n_orphaned_present = copy_orphaned_files(
         src, out_root, covered_dirs, overwrite_log=overwrite_log, dry_run=dry_run,
         dir_out_overrides=db_dir_out_overrides,
     )
@@ -2536,6 +2540,29 @@ def run_conversion(
         print(
             f"  → {n_orphaned} orphaned file(s) "
             f"{'would be ' if dry_run else ''}copied (no entry HTML; preserved as attachments)"
+        )
+
+    # L1: nothing was written iff there were zero db entries, zero standalone
+    # pages, AND zero orphaned files present in the output. copy_orphaned_files
+    # can populate out_root even when no HTML node was ever discovered (a
+    # PDF-only export section, a folder of loose attachments) — that's a real,
+    # if HTML-less, conversion, not an empty one. The signal must wait until
+    # after the orphan-copy pass runs so its count is known; computing it
+    # earlier (keyed on n_db_entries/pages alone) made it a false positive
+    # whenever a directory held only non-HTML orphan files.
+    #
+    # Use n_orphaned_present (files present in the output once this run
+    # completes), not n_orphaned (files newly copied THIS run) — an idempotent
+    # re-run against the same src/out pair skips re-copying a byte-identical
+    # file already on disk, so n_orphaned would read 0 even though the output
+    # vault still holds real orphaned content from an earlier run.
+    no_content_found = n_db_entries == 0 and len(pages) == 0 and n_orphaned_present == 0
+    if no_content_found:
+        print(
+            f"WARNING: no Notion content found in {src} — 0 database entries, "
+            "0 standalone pages, and 0 orphaned files were discovered. This is "
+            "a valid but empty conversion; check that the export path is "
+            "correct if this is unexpected."
         )
 
     # Aggregate schema across all databases for the vault-wide artifacts.

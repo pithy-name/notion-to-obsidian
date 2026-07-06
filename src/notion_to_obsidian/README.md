@@ -481,21 +481,33 @@ a working task list, but the summary here is the durable public record.
   markers without being a real article), no `.md` is written and no
   warning is logged. The persisted `_conversion_report.md` also
   overstates the per-database entry count in this case (it reports the
-  pre-filter count). Found by the 2026-07-06 red-team panel; deferred.
+  pre-filter count). `summary["no_content_found"]` inherits this same
+  pre-filter-count limitation: it is computed from DISCOVERED entry/page
+  counts (plus, since L1, the orphan-copy count), so a folder classified
+  as a database whose every entry HTML fails `parse_entry` could still
+  read `no_content_found == False` while zero notes are actually written.
+  It's a reliable "nothing written at all" signal only to the extent
+  discovery matches writes. Found by the 2026-07-06 red-team panel;
+  deferred (same class as the `parse_entry`-None-drop gap above, not
+  separately fixed).
 - **Pointing the converter at a non-Notion-export directory used to
-  silently "succeed" (Q2, partially fixed).** `run_conversion` now detects
-  the "0 database entries AND 0 standalone pages found" case — the shape a
-  non-Notion directory actually produces — and prints an explicit
-  `WARNING: no Notion content found in <path>...` line, plus sets
+  silently "succeed" (Q2, fixed, extended by L1).** `run_conversion`
+  detects the "nothing was written at all" case — 0 database entries, 0
+  standalone pages, AND (since L1) 0 orphaned files copied — and prints an
+  explicit `WARNING: no Notion content found in <path>...` line, plus sets
   `summary["no_content_found"] = True` so a library caller can check for it
   without diffing file counts. It still exits 0 (a genuinely empty export
   directory is a legitimate, non-error input), but the outcome is now loud
   and machine-detectable instead of looking identical to a real
-  conversion. Remaining gap: a stray non-node `.html` file sitting
-  *alongside* real content that WAS found is still silently dropped (not
-  converted, not copied as an orphan) — this warning only fires on the
-  all-zero case. Found by the 2026-07-06 red-team panel; the all-zero case
-  fixed alongside K1 (`run_conversion` input validation).
+  conversion. L1 closed the false-positive case where a directory held
+  only non-HTML orphan files (PDFs, images, loose attachments): those are
+  copied by `copy_orphaned_files` and are now correctly treated as real
+  (if HTML-less) output, not an empty conversion. Remaining gap: a stray
+  non-node `.html` file sitting *alongside* real content that WAS found is
+  still silently dropped (not converted, not copied as an orphan) — this
+  warning only fires on the all-zero case. Found by the 2026-07-06
+  red-team panel; the all-zero case fixed alongside K1 (`run_conversion`
+  input validation) and L1 (orphan-only directories).
 - **An uncaught mid-run exception loses the accumulated report (Q3,
   reachability unconfirmed).** `_emit_conversion_report` only runs at the
   very end of `run_conversion`; an exception anywhere earlier (e.g. inside
