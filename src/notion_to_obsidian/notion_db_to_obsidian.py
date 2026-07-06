@@ -1755,7 +1755,23 @@ def write_entry(
                 f"{entry['title']!r}: property {pname!r} is {ptype} on this page "
                 f"but {dominant_type} elsewhere; converted as {dominant_type}."
             )
-        value = convert_property_value(dominant_type, td)
+        # F3 (B8 gap): B8 only guards dominant select/status against a
+        # multi-valued cell (2+ selected-value spans). Any OTHER dominant
+        # type still dispatches straight to convert_property_value, which
+        # either drops the values entirely (dominant checkbox: neither
+        # checkbox-on/off nor the raw-text truthy check matches, -> False)
+        # or glues them together with no separator via td.get_text()
+        # (dominant date/number/person/text/etc.: "Red"+"Blue" -> "RedBlue").
+        # Detect the multi-valued shape BEFORE dispatching and preserve every
+        # value as a list — the same rendering B8 already gives dominant
+        # select/status — regardless of what dominant_type turned out to be.
+        multi_spans = td.find_all("span", class_="selected-value")
+        if len(multi_spans) >= 2 and dominant_type != "multi_select":
+            multi_values = [s.get_text(strip=True) for s in multi_spans if s.get_text(strip=True)]
+            value = (multi_values if len(multi_values) > 1
+                      else (multi_values[0] if multi_values else None))
+        else:
+            value = convert_property_value(dominant_type, td)
         if value is None:
             frontmatter[key] = None
             continue
