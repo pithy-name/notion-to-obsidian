@@ -1749,8 +1749,15 @@ def write_entry(
         contents += "\n" + body_md + "\n"
     # If this note is the "home" of one or more child databases, embed each
     # child's .base and list its entries as wikilinks (drives the graph).
+    # B11: when the owned DB's name is IDENTICAL to the page title (a common
+    # shape — a database's own index/landing page named after the database),
+    # the "## <DB>" section heading directly repeats the "# <title>" heading
+    # already emitted above it. Omit the redundant section heading in that
+    # case; the .base embed + entry list still follow directly under the
+    # page's own H1.
     for od in (owned_dbs or []):
-        contents += "\n## " + od["name"] + "\n"
+        if od["name"] != entry["title"]:
+            contents += "\n## " + od["name"] + "\n"
         contents += "\n![[" + od["base_name"] + ".base]]\n"
         if od.get("children"):
             contents += "\n" + "\n".join(f"- [[{c}]]" for c in od["children"]) + "\n"
