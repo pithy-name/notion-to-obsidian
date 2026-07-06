@@ -4,6 +4,30 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-07-06 — Round-2 red-team fixes (G1–G8): regressions from the F-round fix wave
+
+A second adversarial panel reviewed the F1–F14 fix wave itself and found the fixes had introduced their own regressions/gaps (G1–G8), fixed here, each with a failing test first.
+
+**G1 (HIGH regression)** — `convert_body`'s F4 cross-node link fragment split ran `decoded.partition("#")` AFTER `unquote(href)`. A title containing a literal `#` (e.g. "C# Notes") exports percent-encoded (`%23`); `unquote` turned it into a literal `#`, and the split then truncated the lookup at the title's own `#` — missing wikilink_map, missing the `.html` fallback (the `.html` was sliced into the discarded fragment half), with **zero warning**. Fixed by partitioning the RAW, still-encoded href on `#` instead — a real fragment delimiter is always literal pre-decode.
+
+**G2 (MINOR, fixed alongside G1)** — a query string on a cross-node href (`Node.html?src=abc`) matched neither the wikilink map nor the `.html` fallback (`.endswith(".html")` fails with `?query` attached) — a silent drop. Now stripped the same way, before unquoting.
+
+**G3 (MEDIUM)** — `_convert_equations`'s inline-annotation empty-TeX branch called `annotation.decompose()`, removing only the `<annotation>` node. Real Notion inline-equation markup carries presentational MathML alongside the TeX annotation; that sibling MathML survived and markdownify rendered it as ordinary prose text, silently injected into the paragraph — even though the warning claimed "nothing to preserve." Fixed to decompose the same wrapper the non-empty branch already operates on.
+
+**G4 (MAJOR)** — the F5 "`<Prop> (end)`" collision guard was added to `write_entry` but not `emit_types_json`, which has its own independent synthetic-key loop. A real property literally named "Duration (end)", iterated after a date property "Duration", found `types_map` already occupied by the synthetic `datetime` registration and was never given its own true type — permanently mistyped in `.obsidian/types.json`. Fixed by precomputing real schema keys up front (order-independent), mirroring `write_entry`'s guard. No warnings accumulator is threaded into this function; noted as a documented limitation.
+
+**G5 (MODERATE)** — the B11/F9 casefold heading dedup fired independently per owned DB. A page owning 2+ databases whose names ALL casefold-match the page title had every one of them suppress its own `## <name>` heading, collapsing multiple `.base` embeds under one bare title H1. Scoped the dedup to fire only when the page owns exactly one database.
+
+**G6 (MAJOR test-adequacy)** — `test_multivalue_under_non_select_dominant.py`'s three tests used `assertIn`/`assertNotIn` on raw text, which stays green even if the fix regresses to a glued `"Red, Blue"` string. F13 (`0f109c6`) fixed this exact defect shape for the sibling B8 test one commit later; never backported here. Rewrote all three to parse frontmatter via `yaml.safe_load` and assert list equality. Verified in a scratch copy (deleted after) that regressing the fix to `", ".join(...)` makes all three rewritten tests fail.
+
+**G7 (MAJOR hardening)** — the equation-placeholder restore loop (`for ph, tex in equation_map.items(): md = md.replace(ph, tex)`) is a naive sequential replace: if an earlier equation's raw TeX literally contains a later equation's placeholder token, the later `.replace()` splices the two equations together. Real-world reachability is essentially nil, but fixed to a single `re.sub` pass (scans the original string once, never rescans replacement text) plus a leftover-placeholder warning if restoration is ever incomplete.
+
+**G8 (docs-only)** — `test_packaging.py` docstring now states explicitly it's a SOURCE-consistency check (parses `pyproject.toml`, imports off `sys.path`), not an installed-metadata check — CI's `--help` smoke steps carry that. `test_schema_drift_multivalue.py`'s write_entry test now notes its live guard is F3's write_entry-level check, not the solo B8 `convert_property_value` guard (covered separately).
+
+Full suite green throughout, grown from 208 (F-round baseline) to 219.
+
+---
+
 ## 2026-07-06 — README/CHANGELOG/ROADMAP consolidation for the packaged tool
 
 Decision: root `README.md` now documents `pip install`, both console scripts (`notion2obsidian`, `notion2obsidian-fix-dates`), and a `from notion_to_obsidian import run_conversion` library example, up top — before the per-tool detail sections. `src/notion_to_obsidian/README.md`'s "Known limitations" section is renamed in substance to a full Known Issues list reflecting the B1–B12 triage outcome (fixed items removed/corrected, B1/B3/B5's residual scope stated precisely, by-design non-bugs listed explicitly so they aren't re-raised as bugs), plus a "personal tool, no SLA" maintenance note. New root `ROADMAP.md` holds the generic multi-source-converter idea (sized L) as its own document rather than a README aside.
