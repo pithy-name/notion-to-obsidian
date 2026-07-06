@@ -1933,13 +1933,27 @@ def write_entry(
     # already emitted above it. Omit the redundant section heading in that
     # case; the .base embed + entry list still follow directly under the
     # page's own H1.
-    for od in (owned_dbs or []):
+    owned_dbs_list = owned_dbs or []
+    for od in owned_dbs_list:
         # F9 (B11 exact-match gap): Notion index-page titles and database
         # names commonly drift in case/markdown-heading-hash/whitespace only
         # ("# Animals" page title vs "## animals " db name) while still
         # being the "same name" for dedup purposes. An exact `!=` compare
         # missed those and printed the redundant heading anyway.
-        if od["name"].strip().casefold() != entry["title"].strip().casefold():
+        #
+        # G5 (F9 over-wide): this dedup was built for the single-owned-DB
+        # shape (an index page named after its ONE database) and must not
+        # fire when the page owns 2+ databases — even if more than one of
+        # them casefold-matches the page title. Suppressing per-owned-DB
+        # independently in that case collapsed multiple ".base" embeds +
+        # entry lists under one bare title heading with nothing to tell
+        # them apart. Only dedup when there is exactly one owned DB.
+        name_matches_title = (
+            od["name"].strip().casefold() == entry["title"].strip().casefold()
+        )
+        if len(owned_dbs_list) == 1 and name_matches_title:
+            pass  # omit the redundant "## <name>" heading
+        else:
             contents += "\n## " + od["name"] + "\n"
         contents += "\n![[" + od["base_name"] + ".base]]\n"
         if od.get("children"):

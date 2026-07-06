@@ -26,8 +26,11 @@ class OwnedDbHeadingDedup(unittest.TestCase):
         self._td.cleanup()
 
     def _write(self, page_title: str, db_name: str) -> str:
-        src = self.tmp / "src"; src.mkdir()
-        out = self.tmp / "out"; out.mkdir()
+        return self._write_multi(page_title, [db_name])
+
+    def _write_multi(self, page_title: str, db_names: list) -> str:
+        src = self.tmp / "src"; src.mkdir(exist_ok=True)
+        out = self.tmp / "out"; out.mkdir(exist_ok=True)
         entry = {
             "path": src / "Item aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.html",
             "title": page_title,
@@ -37,7 +40,10 @@ class OwnedDbHeadingDedup(unittest.TestCase):
         }
         n.write_entry(
             entry, out, OrderedDict(), {}, {},
-            owned_dbs=[{"name": db_name, "base_name": db_name, "children": ["A", "B"]}],
+            owned_dbs=[
+                {"name": db_name, "base_name": db_name, "children": ["A", "B"]}
+                for db_name in db_names
+            ],
             force=True, overwrite_log=[], attachment_mode="inplace", dry_run=False,
         )
         return (out / f"{page_title}.md").read_text(encoding="utf-8")
@@ -68,6 +74,18 @@ class OwnedDbHeadingDedup(unittest.TestCase):
         text = self._write("Notes", " Notes ")
         self.assertNotIn("##  Notes ", text)
         self.assertIn("\n# Notes\n", text)
+
+    def test_two_owned_dbs_both_matching_title_keep_both_headings(self):
+        # G5 (F9 over-wide): a page can own 2+ databases. The B11/F9 dedup
+        # was built for the single-owned-DB shape (index page named after
+        # its one database) but fired independently per owned DB — when a
+        # page owns 2 DBs that BOTH casefold-match the page title, both
+        # section headings were suppressed, collapsing two ".base" embeds +
+        # entry lists under one bare "# <title>" H1 with nothing to
+        # distinguish them. Both headings must survive here.
+        text = self._write_multi("Notes", ["Notes", "notes"])
+        self.assertEqual(text.count("## Notes") + text.count("## notes"), 2)
+        self.assertEqual(text.count(".base]]"), 2)
 
 
 if __name__ == "__main__":
