@@ -160,6 +160,22 @@ def parse_entry(html_path: Path) -> Optional[Dict[str, Any]]:
 
     body = article.find("div", class_="page-body")
 
+    # B1 (attempted, blocked — see TODO.md): a landing/root page's own COVER
+    # IMAGE lives outside <div class="page-body"> (typically a <div>/<img> or
+    # <figure> near the top of <article>, before page-body, per Notion's
+    # general "cover image sits above the title" convention). Its href would
+    # need the same copy-path rewrite convert_body already applies to in-body
+    # images, so a regular entry's images rewrite fine — only this outside-
+    # page-body cover element does not. We did not extend parsing to pick it
+    # up: there is no real Notion export sample accessible in this repo to
+    # verify the actual cover-image markup shape (reading `test-output/` is
+    # off-limits), and shipping a fix built only against invented markup
+    # risks a change that "passes" its own synthetic test while doing nothing
+    # — or the wrong thing — against a real export. The image-href rewrite
+    # path this would need to reuse (see convert_body's `<img>` loop) is
+    # itself verified working. Left as a known limitation; see TODO.md B1 and
+    # README Known Issues.
+
     return {
         "path": html_path,
         "title": title,
