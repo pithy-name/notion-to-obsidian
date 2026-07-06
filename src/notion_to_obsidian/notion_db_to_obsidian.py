@@ -1003,11 +1003,35 @@ def convert_body(
         if decoded.startswith(("http://", "https://", "mailto:")):
             continue
 
-        # In-page "#fragment" heading links: this converter doesn't track
-        # Notion's heading ids, so the anchor can never resolve in Obsidian —
-        # it would render as a raw, permanently-broken `#fragment` href.
-        # Drop the link, keep the visible text (B6).
-        if decoded.startswith("#"):
+        # F4 (B6 gap): a href can be "<node>.html#some-block-id" — a link to
+        # ANOTHER node's specific block/heading, not a bare in-page anchor.
+        # Neither the wikilink_map lookup below nor the unresolved-".html"
+        # fallback after it matched this shape before: the map is keyed on
+        # the bare ".html" filename with no fragment, and the fallback's own
+        # `.endswith(".html")` check fails once a "#fragment" tail is
+        # appended. Split the fragment off before either check; a resolved
+        # pre-fragment part still becomes a wikilink (we don't track heading
+        # ids, so the fragment is dropped — this converter has no way to
+        # link INTO a specific block), and an unresolved one still gets the
+        # plain-text fallback + warning.
+        #
+        # G1 (regression fix): split on "#" using the RAW, still-percent-
+        # encoded href — NOT the already-unquoted `decoded` string. A real
+        # fragment delimiter is always a literal "#" in the raw href; a "#"
+        # that is part of the target's own title (e.g. a page titled
+        # "C# Notes") is exported percent-encoded as "%23" and only becomes
+        # a literal "#" after unquote(). Splitting the decoded string
+        # truncated the lookup at the title's own "#", so the link missed
+        # both the wikilink map and the ".html" fallback (the ".html" was
+        # sliced into the discarded "fragment" half) with no warning.
+        raw_path, raw_frag_sep, _raw_fragment = href.partition("#")
+
+        # A bare "#fragment" (nothing before the "#" in the raw href): an
+        # in-page heading anchor. This converter doesn't track Notion's
+        # heading ids, so it can never resolve in Obsidian — it would
+        # render as a raw, permanently-broken `#fragment` href. Drop the
+        # link, keep the visible text (B6).
+        if not raw_path and raw_frag_sep:
             if warnings is not None:
                 warnings.append(
                     f"unresolved in-page anchor link {href!r} converted to "
@@ -1016,21 +1040,14 @@ def convert_body(
             a.replace_with(a.get_text())
             continue
 
-        # F4 (B6 gap): a href can be "<node>.html#some-block-id" — a link to
-        # ANOTHER node's specific block/heading, not a bare in-page anchor
-        # (those start with "#" and are handled above). Neither the
-        # wikilink_map lookup below nor the unresolved-".html" fallback
-        # after it matched this shape before: the map is keyed on the bare
-        # ".html" filename with no fragment, and the fallback's own
-        # `.endswith(".html")` check fails once a "#fragment" tail is
-        # appended. Left alone it fell through both checks untouched — a raw,
-        # dead "<node>.html#fragment" href in the output. Split the fragment
-        # off before either check; a resolved pre-fragment part still becomes
-        # a wikilink (we don't track heading ids, so the fragment is dropped
-        # — this converter has no way to link INTO a specific block), and an
-        # unresolved one still gets the plain-text fallback + warning.
-        path_part, frag_sep, _fragment = decoded.partition("#")
-        lookup = path_part if frag_sep else decoded
+        # G2 (F4 gap): also strip a "?query" suffix off the raw path (same
+        # before-unquote reasoning as the fragment split above) so
+        # "Node.html?src=abc" — which would otherwise match neither the
+        # wikilink map nor the ".html" fallback's `.endswith(".html")`
+        # check — still resolves or falls back instead of silently
+        # dropping through untouched.
+        raw_path_noquery, _raw_q_sep, _raw_query = raw_path.partition("?")
+        lookup = unquote(raw_path_noquery)
 
         # Link to another node anywhere in the export -> [[wikilink]].
         # `wikilink_map` is keyed on each node's filename (basename). An entry

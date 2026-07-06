@@ -90,6 +90,81 @@ class HtmlLinkWithFragment(unittest.TestCase):
         )
 
 
+class HashInTitleLink(unittest.TestCase):
+    """
+    G1 (regression from the F4 fix): a title containing a literal "#" (e.g.
+    "C# Notes") is exported percent-encoded ("%23"). The F4 fragment split
+    ran AFTER unquote(href), so unquote turned "%23" into a literal "#" and
+    the fragment-split truncated the lookup at the title's own "#" —
+    the link missed wikilink_map, missed the ".html" fallback (the ".html"
+    was sliced into the discarded "fragment" half), and fell through with
+    NO warning. Splitting on the RAW (still-encoded) href fixes this: a
+    real fragment delimiter is always literal in the raw href, while a "#"
+    that's part of the title itself only appears after decoding.
+    """
+
+    def test_html_link_to_hash_title_becomes_wikilink(self):
+        md = _conv(
+            '<a href="C%23%20Notes%20abc123.html">C# Notes</a>',
+            wikilink_map={"C# Notes abc123.html": "C# Notes"},
+        )
+        self.assertIn("[[C# Notes]]", md)
+        self.assertNotIn(".html", md)
+
+    def test_html_link_to_unresolved_hash_title_falls_back_with_warning(self):
+        warnings = []
+        md = _conv(
+            '<a href="C%23%20Notes%20abc123.html">C# Notes</a>',
+            warnings=warnings,
+        )
+        self.assertNotIn(".html", md)
+        self.assertNotIn("[[", md)
+        self.assertIn("C# Notes", md)
+        self.assertTrue(
+            any("unresolved" in w and "cross-export" in w for w in warnings),
+            f"expected an unresolved cross-export warning, got: {warnings}",
+        )
+
+
+class QueryStringOnHtmlLink(unittest.TestCase):
+    """
+    G2 (F4 gap): a query string on a cross-node href ("Node.html?src=abc",
+    optionally with a "#fragment" too) matched neither wikilink_map (keyed
+    on the bare filename) nor the ".html" fallback (`.endswith(".html")`
+    fails once "?query" is attached) — a silent drop. Strip the query
+    (and fragment) before the lookup/fallback check.
+    """
+
+    def test_unresolved_html_link_with_query_falls_back_with_warning(self):
+        warnings = []
+        md = _conv(
+            '<a href="Other%20Export%20abc123.html?src=abc">See other page</a>',
+            warnings=warnings,
+        )
+        self.assertNotIn(".html", md)
+        self.assertNotIn("[[", md)
+        self.assertIn("See other page", md)
+        self.assertTrue(
+            any("unresolved" in w and "cross-export" in w for w in warnings),
+            f"expected an unresolved cross-export warning, got: {warnings}",
+        )
+
+    def test_resolved_html_link_with_query_becomes_wikilink(self):
+        md = _conv(
+            '<a href="Aromatherapy%20def.html?src=abc">Aromatherapy</a>',
+            wikilink_map={"Aromatherapy def.html": "Aromatherapy"},
+        )
+        self.assertIn("[[Aromatherapy]]", md)
+
+    def test_resolved_html_link_with_query_and_fragment_becomes_wikilink(self):
+        md = _conv(
+            '<a href="Aromatherapy%20def.html?src=abc#block-123">Aromatherapy</a>',
+            wikilink_map={"Aromatherapy def.html": "Aromatherapy"},
+        )
+        self.assertIn("[[Aromatherapy]]", md)
+        self.assertNotIn("#block-123", md)
+
+
 class UnresolvedFragmentLink(unittest.TestCase):
     def test_fragment_link_becomes_plain_text(self):
         md = _conv('<a href="#heading-123">Jump to section</a>')
