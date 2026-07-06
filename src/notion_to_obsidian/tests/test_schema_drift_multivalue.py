@@ -10,13 +10,14 @@ silently drop the rest. All values for that entry must survive as a list,
 regardless of the dominant schema type, and a divergence warning must be
 logged.
 
-Run: /usr/bin/python3 test_schema_drift_multivalue.py
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 import tempfile
 import unittest
 from collections import Counter, OrderedDict
 from pathlib import Path
 
+import yaml
 from bs4 import BeautifulSoup
 import notion_db_to_obsidian as n
 
@@ -69,8 +70,15 @@ class SchemaDriftMultivalue(unittest.TestCase):
             force=True, overwrite_log=[], attachment_mode="inplace", dry_run=False,
         )
         text = (out / "Item.md").read_text(encoding="utf-8")
-        self.assertIn("Red", text)
-        self.assertIn("Blue", text)
+        # F13: assertIn("Red", text) would also pass on a joined string like
+        # "Category: RedBlue" or "Category: Red, Blue" — neither is a real
+        # YAML list, and the original assertions couldn't tell the
+        # difference. Parse the frontmatter for real and assert list
+        # equality, so a regression back to a glued/joined string (rather
+        # than a proper 2-item YAML list) is actually caught.
+        fm_text = text.split("---", 2)[1]
+        frontmatter = yaml.safe_load(fm_text)
+        self.assertEqual(frontmatter["Category"], ["Red", "Blue"])
         self.assertTrue(
             any("Category" in w for w in warnings),
             "expected a schema-drift warning mentioning the property name",
