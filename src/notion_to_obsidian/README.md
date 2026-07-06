@@ -62,6 +62,21 @@ notion2obsidian \
 `python3 notion_db_to_obsidian.py` for `notion2obsidian` in any command
 on this page — same flags, same behavior.)
 
+### Don't have a real Notion export handy? Build a synthetic one
+
+`tests/synthetic_export.py` generates a PII-free, deterministic fixture export
+(nested databases at depths 0/2/4, a standalone page, a page that owns a
+database, a `<table>` inside an entry body) — the same fixture the test suite
+runs against — so you can try the converter end-to-end with zero real data:
+
+```bash
+python3 -m notion_to_obsidian.tests.synthetic_export /tmp/synthetic-export
+notion2obsidian /tmp/synthetic-export -o /tmp/synthetic-vault
+```
+
+Run with no argument and it writes to a fresh temp dir instead
+(`python3 -m notion_to_obsidian.tests.synthetic_export`, prints the path).
+
 ### What `-o` does to attachments (default behavior)
 
 By default, `-o` writes a **fully self-contained** output folder. Every
@@ -334,6 +349,18 @@ Bug IDs (`B1`, `B3`, …) below refer to the fuller writeup in the repo's
 local (gitignored) `TODO.md` bug-tracking table — not committed, since it's
 a working task list, but the summary here is the durable public record.
 
+- **`_conversion_report.md`'s per-database entry count can overstate what
+  was actually written (Q1, unverified — found 2026-07-06 red-team panel,
+  deferred as out of this branch's scope).** `run_conversion` silently
+  drops an entry when `parse_entry` returns `None` (truncated/corrupt HTML,
+  or a file that substring-matches `class="properties"` without being a
+  real article) — no `.md` is written and no warning is logged for that
+  entry. `_emit_conversion_report`'s databases-summary section then reports
+  the PRE-filter `len(db['entry_paths'])` count rather than the actual
+  post-filter written count, so a report can claim more entries landed in
+  the vault than really did. If your written `.md` count looks short of the
+  report's stated total, this is why — cross-check against the vault
+  directory itself rather than trusting the report's count as ground truth.
 - **Strikethrough — reverify against a real export.** The code-level claim
   that used to be here ("`html_to_md` is markdownify with no strikethrough
   config") is **disproven**: the pinned `markdownify` (1.2.2+) already
