@@ -217,6 +217,25 @@ def parse_notion_date(text: str) -> Optional[str]:
     return None
 
 
+def parse_notion_date_range_end(text: str) -> Optional[str]:
+    """
+    B9: a Notion date RANGE property renders as "Jan 2, 2024 → Jan 5, 2024".
+    `parse_notion_date` (above) keeps only the start — Obsidian has no native
+    date-range type, so per the recommended option (A) in TODO.md, the END
+    date is emitted as a companion `<Prop> (end)` frontmatter property
+    instead of being dropped. Returns the end date's ISO 8601 form (or the
+    raw end text if unparseable), or None if `text` is not a range.
+    """
+    text = text.strip().lstrip("@")
+    if " → " not in text:
+        return None
+    _start, end_text = text.split(" → ", 1)
+    end_text = end_text.strip()
+    if not end_text:
+        return None
+    return parse_notion_date(end_text) or end_text
+
+
 def td_inner_markdown(td: Tag) -> str:
     """Convert a <td>'s inner HTML to Markdown (for rich text properties)."""
     return html_to_md(td.decode_contents(), heading_style="ATX").strip()
@@ -1276,12 +1295,20 @@ def emit_types_json(
     added: List[str] = []
     for pname, info in schema.items():
         key = info["key"]
-        if key in types_map:
-            continue  # never clobber user choices
         dominant_ptype = info["types"].most_common(1)[0][0]
-        otype = obsidian_type_for(key, dominant_ptype)
-        types_map[key] = otype
-        added.append(f"{key}={otype}")
+        if key not in types_map:
+            otype = obsidian_type_for(key, dominant_ptype)
+            types_map[key] = otype
+            added.append(f"{key}={otype}")
+        # B9: a date-range property may emit a companion "<key> (end)" value
+        # (see write_entry) on any entry whose raw value was a range. Register
+        # it as datetime too, so Bases sorts/types it correctly wherever it
+        # shows up — never clobbers an existing user choice for that key.
+        if dominant_ptype in ("date", "created_time", "last_edited_time"):
+            end_key = f"{key} (end)"
+            if end_key not in types_map:
+                types_map[end_key] = "datetime"
+                added.append(f"{end_key}=datetime")
 
     if not added and not corrupt:
         # Nothing to add and existing file is fine.
@@ -1705,6 +1732,18 @@ def write_entry(
                     continue
                 value = [sv]
         frontmatter[key] = value
+        # B9: a date-range value ("Jan 2, 2024 → Jan 5, 2024") only carries
+        # its START through `value` (parse_notion_date takes the first side
+        # of the range). Obsidian has no native date-range type, so — per
+        # the recommended option in TODO.md — emit the END date as a
+        # companion `<Prop> (end)` property (also date-typed) rather than
+        # dropping it. Only fires for date-like properties whose raw text is
+        # actually a range; a plain single date is unaffected.
+        if dominant_type in ("date", "created_time", "last_edited_time"):
+            raw_text = td.get_text(strip=True)
+            end_value = parse_notion_date_range_end(raw_text)
+            if end_value is not None:
+                frontmatter[f"{key} (end)"] = end_value
 
     # Strip inline snapshot tables Notion embeds for nested databases.
     if nested_db_folder_hexes and entry.get("body"):
