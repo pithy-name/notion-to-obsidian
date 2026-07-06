@@ -1896,12 +1896,38 @@ def run_conversion(
         )
         db_name = None
 
+    # Stable processing order → deterministic disambiguation below.
+    databases.sort(key=lambda db: str(db["entries_folder"]))
+
     # Parse entries, build per-database schema, and resolve the mirrored folder.
+    # B4: mirror_output_dir alone maps a DB folder to its output path by
+    # hex-STRIPPING every path component, so two distinct sibling databases
+    # that merely share a display name (their source folders are
+    # "<Name> <hexA>/" and "<Name> <hexB>/", each with its own unique hex)
+    # would both mirror to the SAME output dir and their entries would be
+    # written into one shared folder. Disambiguate DB output dirs the same
+    # way `assign_unique_names` disambiguates node filenames: the first
+    # claimant of a (parent dir, name) pair keeps the plain name; a later
+    # collision gets the short Notion id appended.
+    db_out_dir_claims: Dict[Path, int] = {}
     for db in databases:
         db["_parsed"] = [e for p in db["entry_paths"] if (e := parse_entry(p)) is not None]
         db["schema"] = discover_schema(db["_parsed"])
-        db["out_dir"] = mirror_output_dir(db["entries_folder"], src, out_root)
-        db["base_name"] = db["out_dir"].name
+        parent_out_dir = mirror_output_dir(db["entries_folder"].parent, src, out_root)
+        base_name = sanitize_filename(db["name"]) or "Untitled"
+        candidate_dir = parent_out_dir / base_name
+        if candidate_dir in db_out_dir_claims:
+            db_out_dir_claims[candidate_dir] += 1
+            sid = (db["hex"] or "")[-6:]
+            base_name = (
+                f"{base_name} ({sid})" if sid
+                else f"{base_name} ({db_out_dir_claims[candidate_dir]})"
+            )
+            candidate_dir = parent_out_dir / base_name
+        else:
+            db_out_dir_claims[candidate_dir] = 1
+        db["out_dir"] = candidate_dir
+        db["base_name"] = base_name
 
     # Node registry: every entry, index/landing page, and standalone page → a note.
     nodes: List[Dict[str, Any]] = []
@@ -2123,8 +2149,10 @@ def _emit_conversion_report(
             "source export, embedded files will break."
         )
     for db in databases:
-        mirrored = mirror_output_dir(db["entries_folder"], src, out_root)
-        rel = mirrored.relative_to(out_root)
+        # Use the already-resolved (possibly disambiguated, B4) out_dir rather
+        # than recomputing a bare mirror_output_dir — the latter would report
+        # the wrong (collided) path for a same-named sibling database.
+        rel = db["out_dir"].relative_to(out_root)
         lines.append(
             f"  - **{db['name']}** ({len(db['entry_paths'])} entries) "
             f"→ `{rel}/` (depth {db['depth']})"
