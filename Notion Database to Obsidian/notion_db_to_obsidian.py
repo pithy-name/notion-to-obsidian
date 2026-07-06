@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import functools
 import json
 import os
 import re
@@ -1213,7 +1214,9 @@ def emit_types_json(
 # ---- Main pipeline ---------------------------------------------------------
 
 
-def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
+def _attachment_copy_ignore(
+    dir_path: str, names: List[str], warn_log: Optional[List[str]] = None
+) -> Set[str]:
     """`shutil.copytree` ignore callback: keep genuine attachments, drop child nodes.
 
     On a nested export an entry's source folder ("<Title> <hex>/") holds both
@@ -1248,6 +1251,16 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
     a folder paired with an uppercase "<name>.HTML" (from a case-preserving tool)
     must be recognised too, or the node folder would leak while its html is
     filtered.
+
+    B3 (known limitation, no clean structural fix): the two DIRECTORY-filtering
+    rules below have no content-based check — a genuine user directory that
+    happens to be named like a Notion node (sibling "<name>.html", or itself
+    holding a hex-named ".html") is indistinguishable from a real node folder by
+    name alone, and gets filtered along with everything inside it. Rather than
+    fail silently, every directory filtered by either rule is reported via
+    `warn_log` (when given — the caller threads in `overwrite_log` so it
+    surfaces in `_conversion_report.md`) naming the path so a user can go check
+    it by hand. See TODO.md B3.
     """
     lower_names = {n.lower() for n in names}
     ignored: Set[str] = set()
@@ -1257,9 +1270,37 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
             ignored.add(name)
         elif (name.lower() + ".html") in lower_names and os.path.isdir(child):
             ignored.add(name)
+            _warn_once(
+                warn_log,
+                f"WARN (B3, known limitation): directory `{child}` filtered "
+                "from the attachment copy — a sibling `<name>.html` makes it "
+                "look like that Notion node's own attachment folder. If this "
+                "is actually unrelated user content that happens to share the "
+                "name, its contents were NOT copied (no content-based check "
+                "is possible; see TODO.md B3).",
+            )
         elif os.path.isdir(child) and _dir_contains_node_html(child):
             ignored.add(name)
+            _warn_once(
+                warn_log,
+                f"WARN (B3, known limitation): directory `{child}` filtered "
+                "as a nested-database folder — it contains a Notion-node-"
+                "shaped `.html` file. If this is actually unrelated user "
+                "content, its contents were NOT copied (no content-based "
+                "check is possible; see TODO.md B3).",
+            )
     return ignored
+
+
+def _warn_once(warn_log: Optional[List[str]], message: str) -> None:
+    """Append `message` to `warn_log` unless it's already the last entry.
+
+    `_attachment_copy_ignore` can be invoked multiple times for the same
+    directory (once as a pre-check, again by `shutil.copytree`'s own
+    recursion), which would otherwise duplicate the same WARN line.
+    """
+    if warn_log is not None and message not in warn_log:
+        warn_log.append(message)
 
 
 def _dir_contains_node_html(dir_path: str) -> bool:
@@ -1388,7 +1429,11 @@ def write_entry(
             copy_has_attachments = True
             if attachment_mode == "copy":
                 src_names = os.listdir(src_attach_dir)
-                _ignored = _attachment_copy_ignore(str(src_attach_dir), src_names)
+                # Computed unconditionally (dry-run included) so B3's ambiguous-
+                # directory WARN is always surfaced, not just on a real write.
+                _ignored = _attachment_copy_ignore(
+                    str(src_attach_dir), src_names, warn_log=overwrite_log
+                )
                 copy_has_attachments = any(nm not in _ignored for nm in src_names)
             # `is_symlink()` returns True for broken symlinks (where .exists()
             # is False), so check both to detect any existing target.
@@ -1419,7 +1464,9 @@ def write_entry(
                         if not dry_run:
                             shutil.copytree(
                                 src_attach_dir, dest_attach,
-                                ignore=_attachment_copy_ignore,
+                                ignore=functools.partial(
+                                    _attachment_copy_ignore, warn_log=overwrite_log
+                                ),
                             )
                         overwrite_log.append(
                             f"{'WOULD OVERWRITE' if dry_run else 'OVERWROTE'} "
@@ -1453,7 +1500,9 @@ def write_entry(
                     if not dry_run:
                         shutil.copytree(
                             src_attach_dir, dest_attach,
-                            ignore=_attachment_copy_ignore,
+                            ignore=functools.partial(
+                                _attachment_copy_ignore, warn_log=overwrite_log
+                            ),
                         )
                     if dry_run:
                         overwrite_log.append(
