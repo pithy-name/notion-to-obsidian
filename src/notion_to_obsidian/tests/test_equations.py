@@ -264,5 +264,72 @@ class InlineEquationWrapperOverDeletion(unittest.TestCase):
         self.assertIn("after", md)
 
 
+class MathWrapperOverDeletion(unittest.TestCase):
+    """
+    I1 (round-4 red-team, CRITICAL regression of H1): H1 added
+    `_is_equation_scoped_span` to protect the `<span>` branch of the wrapper
+    lookup, but left the `<math>` branch
+    (`wrapper = annotation.find_parent("math")`) UNGUARDED -- it is taken
+    unconditionally whenever a `<math>` ancestor exists, regardless of
+    whether that `<math>` is exclusively scoped to this one equation. Same
+    blast-radius bug H1 fixed for `<span>`, reopened for `<math>`.
+    """
+
+    def test_two_real_annotations_sharing_one_math_no_crash_second_survives(self):
+        # Shape (a): two REAL <annotation> siblings share one <math>. The
+        # first annotation's `wrapper.replace_with(...)` detaches the shared
+        # <math> from the tree entirely. The loop then reaches the second
+        # annotation, `find_parent("math")` returns that now-detached tag,
+        # and `replace_with` raises ValueError -- an unhandled crash that
+        # kills the whole run.
+        md = _conv(
+            '<p><math>'
+            '<annotation encoding="application/x-tex">a</annotation>'
+            '<annotation encoding="application/x-tex">b</annotation>'
+            '</math></p>'
+        )
+        self.assertIn("$a$", md)
+        self.assertIn("$b$", md)
+
+    def test_math_wrapping_unrelated_prose_is_not_deleted(self):
+        # Shape (b): <math> wraps unrelated prose alongside one real
+        # annotation. Unconditionally decomposing/replacing the whole <math>
+        # silently deletes "IMPORTANT real content" -- no warning, no crash,
+        # just gone.
+        md = _conv(
+            '<p>Before <math>IMPORTANT real content '
+            '<annotation encoding="application/x-tex">x</annotation>'
+            '</math> after</p>'
+        )
+        self.assertIn("IMPORTANT real content", md)
+        self.assertIn("Before", md)
+        self.assertIn("after", md)
+        self.assertIn("$x$", md)
+
+    def test_empty_and_real_annotation_sharing_one_math_real_survives_one_warning(self):
+        # Shape (c): one empty + one real annotation share a <math>. The
+        # unconditional wrapper decomposes the WHOLE <math> (destroying the
+        # real "y" equation too) on the first (empty) annotation, then
+        # logs "empty TeX (nothing to preserve)" for BOTH annotations --
+        # silent loss of a real equation plus a false diagnostic claiming
+        # nothing was lost.
+        warnings = []
+        md = _conv(
+            '<p><math>'
+            '<annotation encoding="application/x-tex"></annotation>'
+            '<annotation encoding="application/x-tex">y</annotation>'
+            '</math></p>',
+            warnings=warnings,
+        )
+        self.assertIn("$y$", md)
+        empty_eq_warnings = [
+            w for w in warnings if "equation" in w.lower() and "empty" in w.lower()
+        ]
+        self.assertEqual(
+            len(empty_eq_warnings), 1,
+            f"expected exactly one empty-equation warning, got: {warnings}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

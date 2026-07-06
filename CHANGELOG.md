@@ -4,6 +4,16 @@ Decision log for this project. Each entry records what changed, why, what was co
 
 ---
 
+## 2026-07-06 — Round-4 red-team fixes (I1–I3): H1 fixed `<span>`, left `<math>` unguarded
+
+A fourth adversarial panel found H1's fix (scope wrapper selection to avoid over-deletion) only guarded the `<span>` branch of `_convert_equations`'s inline path — the `<math>` branch was left exactly as unconditional as the pre-H1 bug it fixed.
+
+**I1 (CRITICAL regression of H1)** — `wrapper = annotation.find_parent("math")` was taken unconditionally whenever a `<math>` ancestor existed, with none of H1's `_is_equation_scoped_span` scoping discipline applied to it. Three confirmed failure shapes, all via `<math>` sharing: (a) two REAL `<annotation>` siblings under one `<math>` — the first's `wrapper.replace_with(...)` detaches the shared `<math>` from the tree; the loop then hits the second annotation, `find_parent("math")` returns the now-detached tag, and `replace_with` raises `ValueError` — unhandled, kills the run; (b) `<math>` wrapping unrelated prose plus one real annotation — the whole `<math>` gets decomposed/replaced, silently deleting the prose, no warning; (c) one empty + one real annotation sharing a `<math>` — the first (empty) annotation's decompose destroys the whole `<math>`, including the real equation, and BOTH get logged as "empty TeX (nothing to preserve)" — a false diagnostic on top of the data loss. Fixed by factoring H1's scoping logic into a shared `_is_equation_scoped_wrapper(wrapper, annotation)` (no other TeX annotation; no non-whitespace text outside this equation's own presentation MathML — `mi`/`mn`/`mo`/`mrow`/etc, not raw prose) and applying it to the `<math>` branch too, exactly as `_is_equation_scoped_span` already applies its own class-check + the same shared core to `<span>`. When a `<math>` (or `<span>`) isn't cleanly single-equation-scoped, wrapper selection falls back to the bare `<annotation>` node, same narrow-residue trade-off H1 already documented. Defense-in-depth: `_safe_remove` now guards every decompose/replace_with call — if the target is already detached from the tree (a prior iteration removed a shared ancestor), it degrades to a no-op + warning instead of raising.
+
+Full suite green throughout, grown from 223 (H-round baseline) to 226.
+
+---
+
 ## 2026-07-06 — Round-3 red-team fixes (H1–H3): a critical over-deletion regression in G3 itself
 
 A third adversarial panel reviewed the G-round fix wave and found G3's own fix (decompose the wrapper, not just the annotation) had reintroduced a data-loss bug of its own, worse than the one it fixed.

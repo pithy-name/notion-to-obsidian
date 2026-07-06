@@ -853,6 +853,53 @@ def _convert_equations(
     def _placeholder() -> str:
         return f"NOTIONEQPLACEHOLDER{len(equation_map)}ENDPLACEHOLDER"
 
+    # I1 (round-4 red-team): tag names MathJax/Notion use for a single
+    # equation's own rendered presentation (symbols, fractions, rows, table
+    # layout, etc). Text nested ONLY inside these (relative to the wrapper)
+    # is this equation's own MathML, not unrelated content -- see
+    # `_is_equation_scoped_wrapper`.
+    _MATHML_PRESENTATION_TAGS = frozenset({
+        "mi", "mn", "mo", "mtext", "mspace", "ms", "mrow", "mfrac", "msqrt",
+        "mroot", "mstyle", "merror", "mpadded", "mphantom", "mfenced",
+        "menclose", "msub", "msup", "msubsup", "munder", "mover",
+        "munderover", "mmultiscripts", "mtable", "mtr", "mtd", "mlabeledtr",
+        "maligngroup", "malignmark", "semantics", "annotation-xml",
+    })
+
+    def _is_equation_scoped_wrapper(wrapper: Tag, annotation: Tag) -> bool:
+        """
+        Shared core (I1, round-4 red-team) for both the `<span>` and
+        `<math>` wrapper checks: is `wrapper` safe to decompose/replace
+        whole, as this ONE equation's exclusive container?
+
+        Unsafe if it holds (1) any OTHER TeX annotation, or (2) any
+        non-whitespace text that is not this equation's own presentation
+        MathML -- i.e. text that sits directly in the wrapper with no
+        presentation-element parent, or nested under a non-presentation
+        element (real prose, not equation markup).
+        """
+        other_annotations = [
+            a for a in wrapper.find_all("annotation", attrs={"encoding": "application/x-tex"})
+            if a is not annotation
+        ]
+        if other_annotations:
+            return False
+        for descendant in wrapper.descendants:
+            if not (isinstance(descendant, NavigableString) and descendant.strip()):
+                continue
+            if annotation in descendant.parents:
+                continue
+            if descendant.parent is wrapper:
+                # Raw text with no presentation-element parent at all --
+                # never legitimate equation markup.
+                return False
+            ancestor = descendant.parent
+            while ancestor is not None and ancestor is not wrapper:
+                if ancestor.name not in _MATHML_PRESENTATION_TAGS:
+                    return False
+                ancestor = ancestor.parent
+        return True
+
     def _is_equation_scoped_span(span: Tag, annotation: Tag) -> bool:
         """
         H1 (round-3 red-team): is `span` safe to decompose/replace whole, as
@@ -864,24 +911,41 @@ def _convert_equations(
         on the first destroys the second, real equation; (b) the nearest
         span wraps unrelated real prose -- decomposing deletes that prose
         too. A span is only safe to treat as this equation's own wrapper if
-        (1) its class marks it equation/math-specific, AND (2) it contains
-        no content beyond this one annotation's own MathML/presentation
-        nodes -- no other <annotation>, no non-whitespace text.
+        (1) its class marks it equation/math-specific, AND (2) it passes the
+        shared `_is_equation_scoped_wrapper` check.
         """
         classes = " ".join(span.get("class") or []).lower()
         if "equation" not in classes and "math" not in classes:
             return False
-        other_annotations = [
-            a for a in span.find_all("annotation", attrs={"encoding": "application/x-tex"})
-            if a is not annotation
-        ]
-        if other_annotations:
-            return False
-        for descendant in span.descendants:
-            if isinstance(descendant, NavigableString) and descendant.strip():
-                if annotation not in descendant.parents:
-                    return False
-        return True
+        return _is_equation_scoped_wrapper(span, annotation)
+
+    def _safe_remove(
+        wrapper: Tag,
+        *,
+        replace_text: Optional[str],
+        context: str,
+    ) -> None:
+        """
+        I1 (round-4 red-team) defense-in-depth: decompose (`replace_text is
+        None`) or `replace_with(NavigableString(replace_text))` the given
+        wrapper, guarding against it having already been detached from the
+        tree by a prior iteration (e.g. a shared ancestor already removed
+        while processing an earlier annotation on the same page). A
+        detached target degrades to a no-op + warning instead of raising
+        `ValueError`.
+        """
+        if wrapper.parent is None:
+            if warnings is not None:
+                warnings.append(
+                    f"skipped {context}: its container was already removed "
+                    "while processing an earlier equation on the same page "
+                    "(no data was written for this occurrence)."
+                )
+            return
+        if replace_text is None:
+            wrapper.decompose()
+        else:
+            wrapper.replace_with(NavigableString(replace_text))
 
     for fig in body_tag.find_all("figure", class_=lambda c: c and "equation" in c):
         annotation = fig.find("annotation", attrs={"encoding": "application/x-tex"})
@@ -905,15 +969,20 @@ def _convert_equations(
     # inline handling.
     for annotation in body_tag.find_all("annotation", attrs={"encoding": "application/x-tex"}):
         tex = annotation.get_text(strip=True)
-        # H1 (round-3 red-team, over-deletion regression of G3): the old
+        # H1 (round-3 red-team, over-deletion regression of G3), extended by
+        # I1 (round-4 red-team -- H1 only guarded the <span> branch, leaving
+        # <math> unconditional again): the old
         # `annotation.find_parent(["math", "span"]) or annotation` grabbed
         # the NEAREST span/math ancestor unconditionally -- which can be
         # shared by unrelated content (a second annotation, or real prose)
         # and its blast radius then deletes/replaces that unrelated content
-        # too. Only ever decompose/replace a wrapper that is unambiguously
-        # scoped to this ONE equation:
-        #   1. a <math> ancestor, if any -- a <math> element wraps exactly
-        #      one equation's presentation MathML + its own annotation; or
+        # too (or, for <math>, crashes on a since-detached shared ancestor --
+        # see `_safe_remove`). Only ever decompose/replace a wrapper that is
+        # unambiguously scoped to this ONE equation:
+        #   1. a <math> ancestor, if any, but ONLY if it holds no content
+        #      beyond this one annotation's own MathML/presentation nodes
+        #      (see `_is_equation_scoped_wrapper`) -- a <math> CAN be shared
+        #      by a second annotation or unrelated prose, same as a span; or
         #   2. a <span> ancestor, but ONLY if its class marks it as
         #      equation/math-specific AND it holds no content beyond this
         #      annotation's own nodes (see _is_equation_scoped_span); or
@@ -922,6 +991,8 @@ def _convert_equations(
         #      residue leak in that ambiguous case rather than risk
         #      deleting real content; see README Known Issues.
         wrapper = annotation.find_parent("math")
+        if wrapper is not None and not _is_equation_scoped_wrapper(wrapper, annotation):
+            wrapper = None
         if wrapper is None:
             span_ancestor = annotation.find_parent("span")
             if span_ancestor is not None and _is_equation_scoped_span(span_ancestor, annotation):
@@ -934,11 +1005,11 @@ def _convert_equations(
                     "dropped an inline equation annotation with empty TeX "
                     "(nothing to preserve)."
                 )
-            wrapper.decompose()
+            _safe_remove(wrapper, replace_text=None, context="an empty inline equation wrapper")
             continue
         placeholder = _placeholder()
         equation_map[placeholder] = f"${tex}$"
-        wrapper.replace_with(NavigableString(placeholder))
+        _safe_remove(wrapper, replace_text=placeholder, context="an inline equation wrapper")
 
 
 def _convert_iframes(body_tag: Tag) -> None:
