@@ -142,8 +142,17 @@ class EmptyEquationWarns(unittest.TestCase):
             ' after.</p>',
             warnings=warnings,
         )
-        self.assertNotIn("x+2", md)
-        self.assertNotIn("+2", md)
+        # J1 (round-5 fix): the annotation-only-mutation approach never
+        # touches the <math>/<mrow> ancestors, so this sibling presentation
+        # MathML ("x+2") is now expected to survive as cosmetic residue next
+        # to the (removed) empty annotation -- see README Known Issues. The
+        # non-negotiable safety property this test now checks is narrower:
+        # nothing CRASHES and the real prose "Before"/"after" survives. The
+        # old assertNotIn("x+2", md) / assertNotIn("+2", md) asserted
+        # residue-ABSENCE, which required decomposing the <math> ancestor --
+        # exactly the operation that caused the round-5 silent-data-loss bug
+        # (an ancestor shared by other equations). Residue is now an
+        # accepted trade-off, not a defect.
         self.assertIn("Before", md)
         self.assertIn("after", md)
         self.assertTrue(
@@ -329,6 +338,153 @@ class MathWrapperOverDeletion(unittest.TestCase):
             len(empty_eq_warnings), 1,
             f"expected exactly one empty-equation warning, got: {warnings}",
         )
+
+
+class RealisticNestedSharedMathWrapper(unittest.TestCase):
+    """
+    J1 (round-5 red-team, CRITICAL regression of I1): I1's
+    `_is_equation_scoped_wrapper` check walks descendants and re-evaluates
+    "is this <math> exclusively scoped to one equation" fresh for each
+    annotation in the loop. With REALISTIC MathJax nesting -- each equation
+    wrapped in its own `<semantics><mrow>...</mrow><annotation>...</annotation
+    ></semantics>` sibling under one shared `<math>` -- processing the first
+    annotation decomposes/replaces its `<semantics>` (or the shared `<math>`
+    itself, depending on scoping), mutating the tree the loop is still
+    iterating. The live re-check on the next annotation then sees a
+    corrupted/partial tree and either mis-scopes or the annotation's own
+    ancestor chain has already been detached -- N-1 of N equations sharing
+    one `<math>` are silently lost.
+
+    J1's fix eliminates the whole bug class by construction: replace ONLY
+    the `<annotation>` node being iterated, never any ancestor
+    (`<math>`, `<span>`, `<semantics>`, `<mrow>`, ...). Because no ancestor
+    is ever mutated, there is no shared-wrapper scoping decision to get
+    wrong, and no mutation-during-iteration hazard -- regardless of how many
+    equations share a `<math>`, or how deep the MathJax nesting is.
+    """
+
+    def test_two_equations_sharing_one_math_with_semantics_nesting_both_survive(self):
+        # Exact round-5 repro shape: 2 equations, each in its own
+        # <semantics><mrow>...</mrow><annotation>...</annotation></semantics>,
+        # sharing one <math>.
+        md = _conv(
+            '<p><math>'
+            '<semantics><mrow><mi>a</mi></mrow>'
+            '<annotation encoding="application/x-tex">a=1</annotation>'
+            '</semantics>'
+            '<semantics><mrow><mi>b</mi></mrow>'
+            '<annotation encoding="application/x-tex">b=2</annotation>'
+            '</semantics>'
+            '</math></p>'
+        )
+        self.assertIn("$a=1$", md)
+        self.assertIn("$b=2$", md)
+
+    def test_three_equations_sharing_one_math_with_semantics_nesting_all_survive(self):
+        md = _conv(
+            '<p><math>'
+            '<semantics><mrow><mi>a</mi></mrow>'
+            '<annotation encoding="application/x-tex">a=1</annotation>'
+            '</semantics>'
+            '<semantics><mrow><mi>b</mi></mrow>'
+            '<annotation encoding="application/x-tex">b=2</annotation>'
+            '</semantics>'
+            '<semantics><mrow><mi>c</mi></mrow>'
+            '<annotation encoding="application/x-tex">c=3</annotation>'
+            '</semantics>'
+            '</math></p>'
+        )
+        self.assertIn("$a=1$", md)
+        self.assertIn("$b=2$", md)
+        self.assertIn("$c=3$", md)
+
+    def test_two_equations_sharing_one_span_equation_wrapper_with_semantics_nesting_both_survive(self):
+        # Same realistic nesting, but under one shared <span class="equation">
+        # instead of a shared <math>.
+        md = _conv(
+            '<p><span class="equation">'
+            '<math><semantics><mrow><mi>a</mi></mrow>'
+            '<annotation encoding="application/x-tex">a=1</annotation>'
+            '</semantics></math>'
+            '<math><semantics><mrow><mi>b</mi></mrow>'
+            '<annotation encoding="application/x-tex">b=2</annotation>'
+            '</semantics></math>'
+            '</span></p>'
+        )
+        self.assertIn("$a=1$", md)
+        self.assertIn("$b=2$", md)
+
+    def test_math_wrapping_unrelated_prose_plus_one_annotation_prose_and_tex_both_survive(self):
+        # Round-4 shape, must still hold under the new approach.
+        md = _conv(
+            '<p>Before <math>IMPORTANT real content '
+            '<annotation encoding="application/x-tex">x</annotation>'
+            '</math> after</p>'
+        )
+        self.assertIn("IMPORTANT real content", md)
+        self.assertIn("Before", md)
+        self.assertIn("after", md)
+        self.assertIn("$x$", md)
+
+    def test_two_bare_annotations_no_semantics_wrapper_both_survive(self):
+        # Round-4 shape (no <semantics> nesting at all), must still hold.
+        md = _conv(
+            '<p><math>'
+            '<annotation encoding="application/x-tex">a</annotation>'
+            '<annotation encoding="application/x-tex">b</annotation>'
+            '</math></p>'
+        )
+        self.assertIn("$a$", md)
+        self.assertIn("$b$", md)
+
+    def test_empty_and_real_annotation_sharing_math_with_semantics_nesting_one_warning(self):
+        warnings = []
+        md = _conv(
+            '<p><math>'
+            '<semantics><mrow><mi>x</mi></mrow>'
+            '<annotation encoding="application/x-tex"></annotation>'
+            '</semantics>'
+            '<semantics><mrow><mi>y</mi></mrow>'
+            '<annotation encoding="application/x-tex">y</annotation>'
+            '</semantics>'
+            '</math></p>',
+            warnings=warnings,
+        )
+        self.assertIn("$y$", md)
+        empty_eq_warnings = [
+            w for w in warnings if "equation" in w.lower() and "empty" in w.lower()
+        ]
+        self.assertEqual(
+            len(empty_eq_warnings), 1,
+            f"expected exactly one empty-equation warning, got: {warnings}",
+        )
+
+
+class CommonCaseRegressionCoverage(unittest.TestCase):
+    """
+    J1: common-case sanity coverage under the new annotation-only-mutation
+    approach. Residue MAY be present (sibling presentation MathML is never
+    touched) -- these tests assert the equation is emitted and nothing is
+    LOST, not residue-absence.
+    """
+
+    def test_single_block_equation_converts_to_dollar_dollar_fence(self):
+        md = _conv(
+            '<figure class="equation">'
+            '<annotation encoding="application/x-tex">E = mc^2</annotation>'
+            '</figure>'
+        )
+        self.assertIn("$$E = mc^2$$", md)
+
+    def test_single_inline_equation_with_semantics_nesting_converts_to_dollar_fence(self):
+        md = _conv(
+            '<p><span class="math"><math><semantics><mrow>'
+            '<mi>x</mi>'
+            '</mrow>'
+            '<annotation encoding="application/x-tex">x</annotation>'
+            '</semantics></math></span></p>'
+        )
+        self.assertIn("$x$", md)
 
 
 if __name__ == "__main__":
