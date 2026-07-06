@@ -422,6 +422,32 @@ a working task list, but the summary here is the durable public record.
   in the page header) aren't captured. There's no `--flat` output-layout
   flag and no Windows `MAX_PATH` (260-char) handling for deep mirrored
   paths — a very deeply nested export could hit that limit on Windows.
+- **A corrupt/truncated entry HTML is silently dropped (Q1).** If
+  `parse_entry` returns `None` for an entry or standalone page (truncated
+  HTML, or a file that substring-matches the properties/collection
+  markers without being a real article), no `.md` is written and no
+  warning is logged. The persisted `_conversion_report.md` also
+  overstates the per-database entry count in this case (it reports the
+  pre-filter count). Found by the 2026-07-06 red-team panel; deferred.
+- **Pointing the converter at a non-Notion-export directory silently
+  "succeeds" (Q2).** You get exit 0, `Found 0 entries... Done.`, and any
+  generic `.html` file in that directory is neither converted (it matches
+  no node shape) nor copied as an orphan attachment (the orphan pass
+  skips `.html` unconditionally) — a wrong-folder run looks like a clean
+  no-op instead of an error. Found by the 2026-07-06 red-team panel;
+  deferred.
+- **An uncaught mid-run exception loses the accumulated report (Q3,
+  reachability unconfirmed).** `_emit_conversion_report` only runs at the
+  very end of `run_conversion`; an exception anywhere earlier (e.g. inside
+  the unhandled `_symlink_filtered_attachments`) means every warning
+  accumulated for whatever partial output was already written is lost,
+  with no report file at all. Found by the 2026-07-06 red-team panel;
+  deferred.
+- **`notion2obsidian-fix-dates` exits 0 even with unparseable values
+  (Q4).** Unparseable date-keyed values are logged as `WARN` lines but
+  don't affect the process exit code, so a scripted/CI caller can't
+  detect a partial failure from the exit status alone. Pre-existing;
+  found by the 2026-07-06 red-team panel; deferred.
 
 ### Maintenance
 
