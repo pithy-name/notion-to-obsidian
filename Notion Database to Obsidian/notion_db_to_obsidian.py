@@ -1292,6 +1292,32 @@ def _attachment_copy_ignore(
     return ignored
 
 
+def _symlink_filtered_attachments(
+    src_dir: Path, dest_dir: Path, warn_log: List[str]
+) -> None:
+    """
+    Populate `dest_dir` with PER-FILE/PER-ENTRY symlinks into `src_dir`,
+    applying the same child-node filter used by copy mode
+    (`_attachment_copy_ignore`) — only genuine attachments get a symlink; a
+    Notion node's own ".html" and its hex-named folder are skipped.
+
+    B5: the old implementation symlinked the WHOLE `src_dir` as one directory
+    symlink, so Obsidian (or anything walking the output tree) saw straight
+    through it to every child node's raw ".html" + hex folder — exactly the
+    content the copy-mode filter exists to hide. Per-file symlinks close that
+    gap without ever copying bytes: `dest_dir` is a real directory; each
+    surviving entry inside it is a symlink to the corresponding entry in
+    `src_dir`.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    names = os.listdir(src_dir)
+    ignored = _attachment_copy_ignore(str(src_dir), names, warn_log=warn_log)
+    for name in names:
+        if name in ignored:
+            continue
+        (dest_dir / name).symlink_to((src_dir / name).resolve())
+
+
 def _warn_once(warn_log: Optional[List[str]], message: str) -> None:
     """Append `message` to `warn_log` unless it's already the last entry.
 
@@ -1353,9 +1379,14 @@ def write_entry(
     `attachment_mode` controls how each entry's attachment dir is materialized
     in the output:
       - "copy" (default): full copy via shutil.copytree. Doubles disk usage.
-      - "symlink": create a symlink in the output that points at the source
-        attachment dir's absolute path. Zero extra disk usage; new md hrefs
-        reference `<NewDB>/<Entry>/file.pdf` and resolve through the symlink.
+      - "symlink": create a real directory in the output containing PER-FILE
+        symlinks (via `_symlink_filtered_attachments`) into the source
+        attachment dir — the same child-node filter used by copy mode is
+        applied first, so a Notion node's own ".html"/hex-folder never gets a
+        symlink (B5 fix: an earlier version symlinked the whole source dir,
+        exposing child-node content straight through it). Zero extra disk
+        usage for the attachment bytes themselves; new md hrefs reference
+        `<NewDB>/<Entry>/file.pdf` and resolve through the per-file symlink.
         Breaks if the source is later moved/deleted. Filesystem-level tested
         2026-05-05; Obsidian render not yet verified.
       - "inplace": no output-side directory or symlink is created. Md hrefs
@@ -1453,12 +1484,15 @@ def write_entry(
                             shutil.rmtree(dest_attach)
                     if attachment_mode == "symlink":
                         if not dry_run:
-                            dest_attach.symlink_to(src_attach_dir.resolve())
+                            _symlink_filtered_attachments(
+                                src_attach_dir, dest_attach, overwrite_log
+                            )
                         overwrite_log.append(
                             f"{'WOULD OVERWRITE' if dry_run else 'OVERWROTE'} "
-                            f"existing target with symlink: `{dest_attach.name}` "
-                            f"→ `{src_attach_dir.resolve()}` "
-                            f"(--force, --symlink-attachments)."
+                            f"existing target `{dest_attach.name}/` with "
+                            f"per-file symlinks into `{src_attach_dir.resolve()}` "
+                            f"(--force, --symlink-attachments; child-node "
+                            f"HTML/folders skipped)."
                         )
                     elif copy_has_attachments:  # copy
                         if not dry_run:
@@ -1490,11 +1524,14 @@ def write_entry(
             else:
                 if attachment_mode == "symlink":
                     if not dry_run:
-                        dest_attach.symlink_to(src_attach_dir.resolve())
+                        _symlink_filtered_attachments(
+                            src_attach_dir, dest_attach, overwrite_log
+                        )
                     if dry_run:
                         overwrite_log.append(
-                            f"WOULD CREATE symlink `{dest_attach.name}` → "
-                            f"`{src_attach_dir.resolve()}`."
+                            f"WOULD CREATE `{dest_attach.name}/` with per-file "
+                            f"symlinks into `{src_attach_dir.resolve()}` "
+                            f"(child-node HTML/folders skipped)."
                         )
                 elif copy_has_attachments:  # copy
                     if not dry_run:
@@ -1981,12 +2018,6 @@ def run_conversion(
 
     total_warnings: List[str] = []
     overwrite_log: List[str] = []
-    if attachment_mode == "symlink" and any(db["owner_hex"] for db in databases):
-        msg = ("symlink attachment mode on a NESTED export exposes child-node content "
-               "through the symlinked source folder; use --inplace-attachments (or the "
-               "default copy mode, which filters child nodes) for nested exports.")
-        print(f"WARNING: {msg}")
-        total_warnings.append(msg)
 
     # Assign each database a "home" note that embeds its base + lists its entries;
     # give every entry an `↑ Part of [[home]]` backlink.
@@ -2277,14 +2308,17 @@ def main() -> int:
         action="store_true",
         help=(
             "Instead of copying each entry's attachment directory into the "
-            "output, create a symlink in the output that points at the "
-            "source attachment dir. Avoids duplicating attachment files on "
-            "disk. New md hrefs reference `<NewDB>/<Entry>/file.pdf` and "
-            "resolve through the symlink. If you later move or delete the "
-            "source export, the symlinks (and any md links into them) "
-            "break. Filesystem-level tested 2026-05-05; Obsidian render "
-            "not yet verified — spot-check one entry in Obsidian before "
-            "relying on it. Mutually exclusive with --inplace-attachments."
+            "output, create a real directory containing PER-FILE symlinks "
+            "into the source attachment dir (only genuine attachments — the "
+            "same child-node filter copy mode uses is applied, so a Notion "
+            "node's own HTML/hex-folder is never symlinked). Avoids "
+            "duplicating attachment files on disk. New md hrefs reference "
+            "`<NewDB>/<Entry>/file.pdf` and resolve through the per-file "
+            "symlink. If you later move or delete the source export, the "
+            "symlinks (and any md links into them) break. Filesystem-level "
+            "tested 2026-05-05; Obsidian render not yet verified — "
+            "spot-check one entry in Obsidian before relying on it. "
+            "Mutually exclusive with --inplace-attachments."
         ),
     )
     attach_mode_group.add_argument(
