@@ -52,6 +52,44 @@ class UnresolvedCrossExportLink(unittest.TestCase):
         self.assertIn("[[Aromatherapy]]", md)
 
 
+class HtmlLinkWithFragment(unittest.TestCase):
+    """
+    F4 (B6 gap): "<node>.html#some-block-id" links to ANOTHER node's specific
+    block — not a bare in-page "#anchor" (handled separately above) — must
+    resolve via wikilink_map on the pre-fragment part, or fall back to plain
+    text + warning when unresolved. Before the fix, this shape matched
+    NEITHER check (wikilink_map is keyed with no fragment; the unresolved-
+    ".html" fallback's `.endswith(".html")` check fails once "#fragment" is
+    appended) and fell through untouched as a raw, dead href.
+    """
+
+    def test_resolved_html_link_with_fragment_becomes_wikilink_fragment_dropped(self):
+        md = _conv(
+            '<a href="Aromatherapy%20def.html#block-123">Aromatherapy</a>',
+            wikilink_map={"Aromatherapy def.html": "Aromatherapy"},
+        )
+        self.assertIn("[[Aromatherapy]]", md)
+        self.assertNotIn("#block-123", md)
+
+    def test_unresolved_html_link_with_fragment_becomes_plain_text(self):
+        md = _conv('<a href="Other%20Export%20abc123.html#block-123">See other page</a>')
+        self.assertNotIn(".html", md)
+        self.assertNotIn("#block-123", md)
+        self.assertNotIn("[[", md)
+        self.assertIn("See other page", md)
+
+    def test_unresolved_html_link_with_fragment_logs_a_warning(self):
+        warnings = []
+        _conv(
+            '<a href="Other%20Export%20abc123.html#block-123">See other page</a>',
+            warnings=warnings,
+        )
+        self.assertTrue(
+            any("unresolved" in w and "cross-export" in w for w in warnings),
+            f"expected an unresolved cross-export warning, got: {warnings}",
+        )
+
+
 class UnresolvedFragmentLink(unittest.TestCase):
     def test_fragment_link_becomes_plain_text(self):
         md = _conv('<a href="#heading-123">Jump to section</a>')

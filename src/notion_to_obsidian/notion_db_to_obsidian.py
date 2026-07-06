@@ -1016,6 +1016,22 @@ def convert_body(
             a.replace_with(a.get_text())
             continue
 
+        # F4 (B6 gap): a href can be "<node>.html#some-block-id" — a link to
+        # ANOTHER node's specific block/heading, not a bare in-page anchor
+        # (those start with "#" and are handled above). Neither the
+        # wikilink_map lookup below nor the unresolved-".html" fallback
+        # after it matched this shape before: the map is keyed on the bare
+        # ".html" filename with no fragment, and the fallback's own
+        # `.endswith(".html")` check fails once a "#fragment" tail is
+        # appended. Left alone it fell through both checks untouched — a raw,
+        # dead "<node>.html#fragment" href in the output. Split the fragment
+        # off before either check; a resolved pre-fragment part still becomes
+        # a wikilink (we don't track heading ids, so the fragment is dropped
+        # — this converter has no way to link INTO a specific block), and an
+        # unresolved one still gets the plain-text fallback + warning.
+        path_part, frag_sep, _fragment = decoded.partition("#")
+        lookup = path_part if frag_sep else decoded
+
         # Link to another node anywhere in the export -> [[wikilink]].
         # `wikilink_map` is keyed on each node's filename (basename). An entry
         # links to a sibling with a bare-basename href (direct match); an
@@ -1024,12 +1040,12 @@ def convert_body(
         # basename. Filenames are vault-unique (they keep the Notion hex), so the
         # basename resolves unambiguously. Checked before any attachment rewrite
         # so .html links never become paths.
-        if decoded in wikilink_map:
-            a.replace_with(f"[[{wikilink_map[decoded]}]]")
+        if lookup in wikilink_map:
+            a.replace_with(f"[[{wikilink_map[lookup]}]]")
             continue
-        decoded_base = decoded.rsplit("/", 1)[-1]
-        if decoded_base != decoded and decoded_base in wikilink_map:
-            a.replace_with(f"[[{wikilink_map[decoded_base]}]]")
+        lookup_base = lookup.rsplit("/", 1)[-1]
+        if lookup_base != lookup and lookup_base in wikilink_map:
+            a.replace_with(f"[[{wikilink_map[lookup_base]}]]")
             continue
 
         # An ".html" href that matched no node in this export at all (B6) —
@@ -1037,7 +1053,7 @@ def convert_body(
         # diverged from this href. Left alone it would be a raw, dead
         # ".html" path in the output; there is nothing to resolve it to, so
         # convert to plain visible text rather than ship a broken link.
-        if decoded_base.lower().endswith(".html"):
+        if lookup_base.lower().endswith(".html"):
             if warnings is not None:
                 warnings.append(
                     f"unresolved cross-export link {href!r} converted to "
