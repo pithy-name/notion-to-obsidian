@@ -775,6 +775,49 @@ def _code_language(pre_tag: Tag) -> str:
     return ""
 
 
+def _convert_equations(body_tag: Tag) -> None:
+    """
+    Convert Notion equation blocks into fenced LaTeX Obsidian renders natively.
+
+    Notion exports a BLOCK equation as
+        <figure class="equation">…<annotation encoding="application/x-tex">E=mc^2</annotation>…</figure>
+    which markdownify would otherwise drop entirely (no text-only fallback) —
+    genuine data loss (B7). Obsidian's built-in LaTeX renderer (MathJax)
+    typesets `$$...$$` (block) and `$...$` (inline) natively, no plugin
+    required, so converting to that syntax is functional, not just
+    source-preservation.
+
+    Minimal viable per the investigation behind B7: preserve the LaTeX
+    source as text. Block equations (the documented, confirmed export shape)
+    become `$$tex$$` on their own line. Any remaining bare
+    `<annotation encoding="application/x-tex">` NOT inside a block-equation
+    figure (Notion's inline-equation shape isn't confirmed against a real
+    export sample) is treated as inline and wrapped `$tex$` — a best-effort
+    fallback so an inline equation is never silently dropped even if its
+    exact wrapper markup differs from what's assumed here.
+    """
+    for fig in body_tag.find_all("figure", class_=lambda c: c and "equation" in c):
+        annotation = fig.find("annotation", attrs={"encoding": "application/x-tex"})
+        tex = (annotation.get_text(strip=True) if annotation else fig.get_text(strip=True))
+        if not tex:
+            fig.decompose()
+            continue
+        new_p = _TAG_FACTORY.new_tag("p")
+        new_p.string = f"$${tex}$$"
+        fig.replace_with(new_p)
+
+    # Any TeX annotation not already consumed by the block-equation pass
+    # above (i.e. not inside a <figure class="equation">) — best-effort
+    # inline handling.
+    for annotation in body_tag.find_all("annotation", attrs={"encoding": "application/x-tex"}):
+        tex = annotation.get_text(strip=True)
+        if not tex:
+            annotation.decompose()
+            continue
+        wrapper = annotation.find_parent(["math", "span"]) or annotation
+        wrapper.replace_with(NavigableString(f"${tex}$"))
+
+
 def _convert_iframes(body_tag: Tag) -> None:
     """
     Notion embed blocks (YouTube, Maps, Figma, …) export as an <iframe>
@@ -843,6 +886,11 @@ def convert_body(
     # so we don't have to deal with their nested mess later.
     _clean_bookmark_figures(body_tag)
     _clean_source_figures(body_tag)
+
+    # Notion equations (<figure class="equation"> / inline TeX annotations) →
+    # fenced LaTeX ($$...$$ / $...$) Obsidian renders natively (B7 — markdownify
+    # otherwise drops them entirely).
+    _convert_equations(body_tag)
 
     # Notion embed blocks (<iframe>) → a link to the embedded URL (markdownify
     # would otherwise drop the iframe and lose the URL entirely).
