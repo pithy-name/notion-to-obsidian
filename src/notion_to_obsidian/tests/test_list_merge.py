@@ -7,7 +7,7 @@ markdownify renders as a "loose" list (a blank line between every item).
 convert_body() must merge runs of adjacent same-kind sibling lists into one
 list first, so the output is a tight Markdown list.
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_list_merge.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util

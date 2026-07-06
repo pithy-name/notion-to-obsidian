@@ -5,7 +5,7 @@ Tests for code-block language preservation.
 Notion exports a code block as `<pre><code class="language-XXX">…</code></pre>`.
 The fence should open with the language (```xxx) so Obsidian highlights it.
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_code_blocks.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util

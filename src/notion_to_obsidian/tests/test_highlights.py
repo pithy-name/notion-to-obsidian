@@ -6,7 +6,7 @@ Notion marks highlighted text with `block-color-*_background`. We wrap such an
 element's inline content in `==`. Block-container backgrounds are skipped, plain
 text colors are left alone, and callouts (handled earlier) are excluded.
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_highlights.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util

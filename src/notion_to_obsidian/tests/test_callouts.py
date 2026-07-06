@@ -8,7 +8,7 @@ which should become an Obsidian callout:
     > [!tip] 💡
     > content
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_callouts.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util

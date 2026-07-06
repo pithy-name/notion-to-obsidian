@@ -25,12 +25,15 @@ What this does:
 
 Zero network access. Pure stdlib.
 
-Usage:
-    python3 fix_frontmatter_dates.py <folder> [--dry-run]
+Usage (installed console script — `pip install -e .` from the repo root):
+    notion2obsidian-fix-dates <folder> [--dry-run]
+
+Usage (from a repo checkout, no install):
+    PYTHONPATH=src /usr/bin/python3 -m notion_to_obsidian.fix_frontmatter_dates \\
+        <folder> [--dry-run]
 
 Example:
-    python3 "Notion Database to Obsidian/fix_frontmatter_dates.py" \\
-        "test-output/<vault-folder>/<entries-folder>"
+    notion2obsidian-fix-dates "<vault-folder>/<entries-folder>"
 """
 
 from __future__ import annotations

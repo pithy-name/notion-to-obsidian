@@ -7,7 +7,7 @@ Emitting it as `[label](url)` is noise inside a YAML frontmatter value, so a
 sole link collapses to the bare URL — detected on the HTML (so any URL works,
 including ones containing ')'). Mixed content is preserved as Markdown.
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_url_property.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util
