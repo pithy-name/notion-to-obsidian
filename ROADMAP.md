@@ -1,8 +1,8 @@
 # Roadmap
 
-Larger, not-yet-started ideas. Day-to-day bugs and small enhancements live in
-the (gitignored, local-only) `TODO.md`; this file is for bigger swings worth
-recording durably.
+Larger, not-yet-started ideas. Day-to-day bugs and small enhancements are
+tracked in the maintainer's private issue backlog (not part of this repo);
+this file is for bigger swings worth recording durably.
 
 ## Generic multi-source converter (size: L)
 

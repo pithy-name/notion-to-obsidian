@@ -345,9 +345,9 @@ doesn't duplicate the generated base + links.
 
 ## Known limitations
 
-Bug IDs (`B1`, `B3`, …) below refer to the fuller writeup in the repo's
-local (gitignored) `TODO.md` bug-tracking table — not committed, since it's
-a working task list, but the summary here is the durable public record.
+Bug IDs (`B1`, `B3`, …) below refer to entries in the maintainer's private
+issue backlog (not part of this repo); the summary here is the durable
+public record.
 
 - **`_conversion_report.md`'s per-database entry count can overstate what
   was actually written (Q1, unverified — found 2026-07-06 red-team panel,
@@ -577,7 +577,7 @@ a working task list, but the summary here is the durable public record.
   answerable to unintended aliases. Plausible but **not verified against a
   real Obsidian instance**. Found by the 2026-07-06 round-10 red-team;
   deferred as a separate, larger scoped change (extending the tags-style
-  guard to other reserved keys). See TODO.md.
+  guard to other reserved keys); tracked in the maintainer's private backlog.
 
 ### Maintenance
 

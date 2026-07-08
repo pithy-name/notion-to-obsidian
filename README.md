@@ -1,4 +1,4 @@
-# Recover Notion Databases — Scripts
+# notion-to-obsidian
 
 Tools for getting Notion databases out of Notion and into Obsidian. The project started as a script to merge a Notion CSV with its per-page bodies; on **2026-04-30** it pivoted to a direct HTML → Obsidian-vault converter (no CSV detour). The older CSV-merge scripts are kept for reference but `notion_db_to_obsidian.py` (packaged as **notion-to-obsidian**) is the current path forward.
 
@@ -7,7 +7,7 @@ Tools for getting Notion databases out of Notion and into Obsidian. The project 
 ## Install
 
 ```bash
-pip install git+<repo-url>
+pip install git+https://github.com/pithy-name/notion-to-obsidian.git
 ```
 
 Or for local development (editable install, from a repo checkout):

@@ -160,7 +160,7 @@ def parse_entry(html_path: Path) -> Optional[Dict[str, Any]]:
 
     body = article.find("div", class_="page-body")
 
-    # B1 (attempted, blocked — see TODO.md): a landing/root page's own COVER
+    # B1 (attempted, blocked — see README Known Issues): a landing/root page's own COVER
     # IMAGE lives outside <div class="page-body"> (typically a <div>/<img> or
     # <figure> near the top of <article>, before page-body, per Notion's
     # general "cover image sits above the title" convention). Its href would
@@ -173,7 +173,7 @@ def parse_entry(html_path: Path) -> Optional[Dict[str, Any]]:
     # risks a change that "passes" its own synthetic test while doing nothing
     # — or the wrong thing — against a real export. The image-href rewrite
     # path this would need to reuse (see convert_body's `<img>` loop) is
-    # itself verified working. Left as a known limitation; see TODO.md B1 and
+    # itself verified working. Left as a known limitation; see B1 in
     # README Known Issues.
 
     return {
@@ -221,7 +221,7 @@ def parse_notion_date_range_end(text: str) -> Optional[str]:
     """
     B9: a Notion date RANGE property renders as "Jan 2, 2024 → Jan 5, 2024".
     `parse_notion_date` (above) keeps only the start — Obsidian has no native
-    date-range type, so per the recommended option (A) in TODO.md, the END
+    date-range type, so per the recommended option (A) in README Known Issues, the END
     date is emitted as a companion `<Prop> (end)` frontmatter property
     instead of being dropped. Returns the end date's ISO 8601 form (or the
     raw end text if unparseable), or None if `text` is not a range.
@@ -1468,7 +1468,7 @@ def emit_types_json(
         # "<Prop> (end)"=datetime persisted on disk from a PRIOR run
         # shadowing a genuinely real property of that exact name in a LATER
         # run) is a documented, accepted Known Issue instead — see
-        # README Known Issues / TODO.md (2026-07-06).
+        # README Known Issues (2026-07-06).
         if key not in types_map:
             types_map[key] = otype
             added.append(f"{key}={otype}")
@@ -1575,7 +1575,7 @@ def _attachment_copy_ignore(
     fail silently, every directory filtered by either rule is reported via
     `warn_log` (when given — the caller threads in `overwrite_log` so it
     surfaces in `_conversion_report.md`) naming the path so a user can go check
-    it by hand. See TODO.md B3.
+    it by hand. See README Known Issues, B3.
     """
     lower_names = {n.lower() for n in names}
     ignored: Set[str] = set()
@@ -1592,7 +1592,7 @@ def _attachment_copy_ignore(
                 "look like that Notion node's own attachment folder. If this "
                 "is actually unrelated user content that happens to share the "
                 "name, its contents were NOT copied (no content-based check "
-                "is possible; see TODO.md B3).",
+                "is possible; see README Known Issues, B3).",
             )
         elif os.path.isdir(child) and _dir_contains_node_html(child):
             ignored.add(name)
@@ -1602,7 +1602,7 @@ def _attachment_copy_ignore(
                 "as a nested-database folder — it contains a Notion-node-"
                 "shaped `.html` file. If this is actually unrelated user "
                 "content, its contents were NOT copied (no content-based "
-                "check is possible; see TODO.md B3).",
+                "check is possible; see README Known Issues, B3).",
             )
     return ignored
 
@@ -1937,7 +1937,7 @@ def write_entry(
         # B9: a date-range value ("Jan 2, 2024 → Jan 5, 2024") only carries
         # its START through `value` (parse_notion_date takes the first side
         # of the range). Obsidian has no native date-range type, so — per
-        # the recommended option in TODO.md — emit the END date as a
+        # the recommended option in README Known Issues — emit the END date as a
         # companion `<Prop> (end)` property (also date-typed) rather than
         # dropping it. Only fires for date-like properties whose raw text is
         # actually a range; a plain single date is unaffected.
@@ -2741,7 +2741,7 @@ def _emit_conversion_report(
             lines.append(
                 "No file was overwritten or preserved-as-`.new` this run. "
                 "Entries below are additive schema updates and/or WARNs "
-                "flagging a known limitation — see TODO.md for context."
+                "flagging a known limitation — see README Known Issues for context."
             )
             lines.append("")
         for w in overwrite_log:

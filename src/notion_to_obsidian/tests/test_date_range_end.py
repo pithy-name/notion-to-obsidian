@@ -4,7 +4,7 @@ B9: a Notion date RANGE property ("Jan 2, 2024 → Jan 5, 2024") must not
 silently drop its end date. `parse_notion_date` keeps only the start (used
 for the property's own frontmatter value, unaffected); the end date is
 additionally emitted as a companion `<Prop> (end)` frontmatter property —
-per TODO.md's recommended option (A): both stay date-typed/sortable.
+per README Known Issues' recommended option (A): both stay date-typed/sortable.
 
 Run: /usr/bin/python3 test_date_range_end.py
 """
@@ -355,7 +355,7 @@ class EmitTypesJsonCrossRunRealPropertyWins(unittest.TestCase):
     narrow case -- see EmitTypesJsonNeverClobbersUserCustomization. The
     never-clobber-on-disk contract is restored (I2), so this specific
     collision is no longer "fixed" by overwriting; it is a documented,
-    accepted trade-off instead (see README Known Issues / TODO.md,
+    accepted trade-off instead (see README Known Issues,
     2026-07-06): a real property is only mistyped in this specific,
     rare cross-run collision scenario (an actual property must be named
     literally "<X> (end)" and collide with a prior run's date-range
