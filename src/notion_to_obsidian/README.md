@@ -22,11 +22,17 @@ vault.
 
 ## Setup
 
+Installed as a package (see the repo root [`README.md`](../../README.md) for
+the `pip install` command) — this gets you the `notion2obsidian` /
+`notion2obsidian-fix-dates` console scripts and an importable `notion_to_obsidian`
+package. If you'd rather run this file directly without installing anything:
+
 ```bash
 pip install beautifulsoup4 markdownify pyyaml
+python3 notion_db_to_obsidian.py ...
 ```
 
-Python 3.8+.
+Python 3.9+.
 
 ## Usage
 
@@ -37,21 +43,39 @@ page, or standalone page, and processes every database it finds:
 
 ```bash
 # Entries folder directly:
-python3 notion_db_to_obsidian.py \
-  "My Notion Export/My Database abc123/"
+notion2obsidian "My Notion Export/My Database abc123/"
 
 # Or the export root (handles multiple databases in one run):
-python3 notion_db_to_obsidian.py "My Notion Export/"
+notion2obsidian "My Notion Export/"
 ```
 
 Default output: a sibling folder named `<source name> (Obsidian)`.
 Override with `-o`:
 
 ```bash
-python3 notion_db_to_obsidian.py \
+notion2obsidian \
   "My Notion Export/My Database abc123/" \
   -o "/path/to/output_vault_folder/"
 ```
+
+(Not installed the package? Substitute
+`python3 notion_db_to_obsidian.py` for `notion2obsidian` in any command
+on this page — same flags, same behavior.)
+
+### Don't have a real Notion export handy? Build a synthetic one
+
+`tests/synthetic_export.py` generates a PII-free, deterministic fixture export
+(nested databases at depths 0/2/4, a standalone page, a page that owns a
+database, a `<table>` inside an entry body) — the same fixture the test suite
+runs against — so you can try the converter end-to-end with zero real data:
+
+```bash
+python3 -m notion_to_obsidian.tests.synthetic_export /tmp/synthetic-export
+notion2obsidian /tmp/synthetic-export -o /tmp/synthetic-vault
+```
+
+Run with no argument and it writes to a fresh temp dir instead
+(`python3 -m notion_to_obsidian.tests.synthetic_export`, prints the path).
 
 ### What `-o` does to attachments (default behavior)
 
@@ -90,21 +114,26 @@ entry's attachment directory is materialized in the output:
 | Mode | Disk usage | Output filesystem objects | Source dependency | Status |
 |------|-----------|---------------------------|-------------------|--------|
 | `copy` (default) | ~2× (attachments only) | Real attachment dirs (child-node HTML/folders filtered out) | None — output is self-contained | Tested in production |
-| `--symlink-attachments` | ~1× | Symlinks pointing at source | Source dir must stay where it is | Filesystem-level OK; Obsidian render UNVERIFIED |
+| `--symlink-attachments` | ~1× | Real dir of per-file symlinks pointing at source (child-node HTML/folders filtered out, same as copy mode) | Source dir must stay where it is | Filesystem-level OK; Obsidian render UNVERIFIED |
 | `--inplace-attachments` | ~1× | None for attachments | Source dir must stay at the same relative path from the output | Filesystem-level OK; Obsidian render UNVERIFIED |
 
 **`--symlink-attachments`** — Each entry's attachment directory is
-created in the output as a symlink to the source dir's *absolute*
-path. Md hrefs still reference `<NewDB>/<Entry>/file.pdf` exactly as
-they would in copy mode; the OS resolves the symlink when Obsidian
-opens an embedded file. If you later move or delete the source export,
-all symlinks (and any md links into them) break.
+created in the output as a REAL directory containing one symlink per
+genuine attachment file, pointing at the source file's absolute path —
+the same child-node filter copy mode uses decides what's genuine, so a
+Notion node's own `.html`/hex-folder is never symlinked (an earlier
+version symlinked the whole source directory, which exposed that
+content). Md hrefs still reference `<NewDB>/<Entry>/file.pdf` exactly
+as they would in copy mode; the OS resolves each per-file symlink when
+Obsidian opens an embedded file. If you later move or delete the
+source export, all symlinks (and any md links into them) break.
 
 When you eventually want to consolidate (e.g. retire the source export
-once you trust the new vault), replace each symlink with a real copy
-via `rsync -aL <symlink> <symlink>` (the `-L` flag follows symlinks
-during the copy) or `cp -RL`, then delete the source. That collapses
-the two-location footprint without rewriting any md links.
+once you trust the new vault), resolve each attachment dir's per-file
+symlinks to real copies in place — e.g. per entry dir:
+`cp -RL "<NewDB>/<Entry>" "<NewDB>/<Entry>.real" && rm -rf "<NewDB>/<Entry>" && mv "<NewDB>/<Entry>.real" "<NewDB>/<Entry>"`
+(`-L` follows symlinks during the copy) — then delete the source. That
+collapses the two-location footprint without rewriting any md links.
 
 **`--inplace-attachments`** — No output-side directories or symlinks
 are created for attachments at all. Md hrefs are rewritten to point at
@@ -316,8 +345,54 @@ doesn't duplicate the generated base + links.
 
 ## Known limitations
 
-- **Strikethrough is lost.** `~~text~~` comes through unstyled rather
-  than struck.
+Bug IDs (`B1`, `B3`, …) below refer to entries in the maintainer's private
+issue backlog (not part of this repo); the summary here is the durable
+public record.
+
+- **`_conversion_report.md`'s per-database entry count can overstate what
+  was actually written (Q1, unverified — found 2026-07-06 red-team panel,
+  deferred as out of this branch's scope).** `run_conversion` silently
+  drops an entry when `parse_entry` returns `None` (truncated/corrupt HTML,
+  or a file that substring-matches `class="properties"` without being a
+  real article) — no `.md` is written and no warning is logged for that
+  entry. `_emit_conversion_report`'s databases-summary section then reports
+  the PRE-filter `len(db['entry_paths'])` count rather than the actual
+  post-filter written count, so a report can claim more entries landed in
+  the vault than really did. If your written `.md` count looks short of the
+  report's stated total, this is why — cross-check against the vault
+  directory itself rather than trusting the report's count as ground truth.
+- **Strikethrough — reverify against a real export.** The code-level claim
+  that used to be here ("`html_to_md` is markdownify with no strikethrough
+  config") is **disproven**: the pinned `markdownify` (1.2.2+) already
+  aliases both `<s>` and `<del>` to `~~text~~` — verified directly
+  (`markdownify('<s>x</s>')` and `markdownify('<del>x</del>')` both →
+  `'~~x~~'`). If strikethrough still comes through unstyled on a real
+  export, the more likely cause is Notion emitting
+  `<span style="text-decoration:line-through">` rather than `<s>`/`<del>` —
+  unverifiable here without a real export sample.
+- **A landing/root page's own cover image isn't rewritten** to its copied
+  vault path (regular in-body entry images rewrite fine). Attempted and
+  blocked: there's no real Notion export sample available in this repo to
+  confirm where the cover-image markup actually lives (`parse_entry` only
+  reads `<div class="page-body">`), so shipping a fix verified only
+  against invented markup risked doing nothing — or the wrong thing —
+  against a real export. See the comment at `parse_entry` in
+  `notion_db_to_obsidian.py`.
+- **A directory that's ambiguously shaped like a Notion node's attachment
+  folder gets filtered, and there's no content-based way to tell it apart
+  from unrelated user content.** `_attachment_copy_ignore`'s two
+  directory-filtering rules (a sibling `<name>.html`, or a folder holding a
+  hex-named `.html`) can't distinguish a genuine node folder from a
+  same-shaped coincidence without reading file contents — out of scope by
+  design. Every such filter now emits an explicit `WARN (B3, known
+  limitation): ...` line naming the path into `_conversion_report.md`, so
+  the loss is surfaced rather than silent, but the underlying ambiguity is
+  not eliminated.
+- **`--symlink-attachments` and `--inplace-attachments` remain
+  experimental.** Both are filesystem-level tested (symlinks/relative
+  hrefs point at the right targets) but **Obsidian's actual rendering is
+  not yet verified** — spot-check one entry in Obsidian before relying on
+  either mode for anything important.
 - **Rich-text styling is largely stripped.** Indentation and colorized
   text get flattened by `markdownify`; no current workaround.
 - **URLs in output are live** (planned: defang). Converted bodies keep
@@ -347,21 +422,169 @@ doesn't duplicate the generated base + links.
   the type via Obsidian's UI (right-click a property → Set type →
   Date & time), or hand-edit `.obsidian/types.json`. There's a
   helper script for fixing already-typed-as-text frontmatter values
-  in older vaults: `fix_frontmatter_dates.py` (rewrites human-
+  in older vaults: `notion2obsidian-fix-dates` (rewrites human-
   readable Notion dates to ISO 8601 in place; idempotent).
+- **A stale synthetic `<Prop> (end)` entry can permanently mistype a same-
+  named real property across separate runs (documented known issue,
+  restored 2026-07-06 after I2 red-team; see also H2).** `.obsidian/types.json`
+  never clobbers an existing entry — only missing keys are added, so a
+  manual Obsidian-UI type override always survives a re-run of the
+  converter onto the same output vault. H2 (round-3) had instead made a
+  real property's type force-overwrite whatever was already in
+  `types.json`, which fixed one narrow cross-run collision but broke that
+  guarantee for every property on every re-run (a genuine user
+  customization got silently reverted every time). I2 (round-4) reverted
+  the force-overwrite and restored the never-clobber contract, accepting
+  the narrow collision as a known limitation instead: if run 1's schema
+  has a date-range property "Duration" (synthesizing a companion
+  "Duration (end)" = `datetime` into `types.json`), and a LATER, separate
+  run onto the SAME output vault has a genuinely real property literally
+  named "Duration (end)" of a different type, that real property's true
+  type is never registered — the stale synthetic entry wins, silently.
+  Reachable only when an actual Notion property is named exactly
+  `<other property> (end)` and collides with a prior run's date-range
+  companion key of the same name — rare. Work around it by hand-editing
+  `.obsidian/types.json` (or setting the type via Obsidian's UI) if hit.
 - **Notion blocks with no clean Markdown equivalent** (column layouts,
   synced blocks, complex embeds) get best-effort flattened by
-  markdownify. Bookmark cards and local-file figures get a custom
-  pre-pass for cleaner output; if another block type comes out
+  markdownify. Bookmark cards, local-file figures, and equations get a
+  custom pre-pass for cleaner output; if another block type comes out
   garbled, look at the original `.html` and we can add a similar
   pre-pass.
+- **Inline equations use a best-effort fallback; minor adjacent "residue"
+  text is a known, accepted trade-off.** Notion's documented, confirmed
+  export shape for a BLOCK equation
+  (`<figure class="equation"><annotation encoding="application/x-tex">`)
+  converts to a proper `$$...$$` fence and is unaffected by anything below.
+  Any bare TeX annotation not inside that figure is treated as inline
+  (`$...$`) — reasonable, but Notion's exact inline-equation markup isn't
+  confirmed against a real export sample, so this is a best-effort
+  fallback rather than a verified path.
+
+  Inline conversion (J1, definitive fix) replaces ONLY the `<annotation>`
+  node itself — it never decomposes or replaces any ancestor (`<math>`,
+  `<span>`, `<semantics>`, ...). Four consecutive red-team rounds (G3, H1,
+  I1, and a final round) each found a NEW silent-data-loss or crash bug in
+  decompose/replace-the-ancestor logic: sibling prose deleted, a sibling
+  equation deleted, a crash on a detached node, and — the shape that
+  forced this rewrite — N-1 of N equations silently lost when they shared
+  one `<math>` wrapper under realistic MathJax `<semantics>/<mrow>`
+  nesting, because mutating an ancestor mid-loop corrupted the tree the
+  next iteration was still scoping against. Replacing only the annotation
+  node is safe by construction: no ancestor is ever touched, so there is
+  no wrapper-scoping decision left to get wrong and no
+  mutation-during-iteration hazard, regardless of markup shape, nesting
+  depth, or how many equations share a wrapper.
+
+  **Accepted trade-off:** sibling presentation MathML (`<mrow>`, `<mi>`,
+  `<mo>`, ...) is left in the tree, so markdownify may render it as
+  adjacent plain-text "residue" next to the `$tex$` in the note. This is
+  cosmetic — strictly preferable to the silent data loss the prior
+  wrapper-removal approach caused.
+- **Query-string-only or empty-after-strip relative `<a href>`s pass
+  through unmodified with no warning (H4).** A relative href like
+  `?query` alone, or `#frag?query` where the path portion is empty after
+  stripping, falls through all link-resolution branches (absolute URL,
+  `.html` wikilink resolution, bare `#fragment`) untouched. Notion's own
+  export doesn't produce this shape — internal links are always absolute
+  URLs, `<Node>.html[...]`, or a bare `#fragment` — so reachability from a
+  real export is nil. Found by the 2026-07-06 round-3 red-team panel;
+  deferred as out-of-scope/unreachable, no code fix implemented.
 - **The root/landing page's body is best-effort.** A page that owns
   databases is written as a note and becomes their home (base embeds +
   entry links), but its own body — Notion's `collection-content` gallery
   of those databases — is converted by markdownify as-is, so it may read
   as a plain table or list above the generated home sections rather than a
   polished landing page.
+- **By design, not a bug:** relation properties emit as plain title
+  strings, not `[[wikilinks]]` (same-database relations could in principle
+  resolve to entry notes — not implemented). Page-level icons (emoji/image
+  in the page header) aren't captured. There's no `--flat` output-layout
+  flag and no Windows `MAX_PATH` (260-char) handling for deep mirrored
+  paths — a very deeply nested export could hit that limit on Windows.
+- **A corrupt/truncated entry HTML is silently dropped (Q1).** If
+  `parse_entry` returns `None` for an entry or standalone page (truncated
+  HTML, or a file that substring-matches the properties/collection
+  markers without being a real article), no `.md` is written and no
+  warning is logged. The persisted `_conversion_report.md` also
+  overstates the per-database entry count in this case (it reports the
+  pre-filter count). `summary["no_content_found"]` inherits this same
+  pre-filter-count limitation: it is computed from DISCOVERED entry/page
+  counts (plus, since L1, the orphan-copy count), so a folder classified
+  as a database whose every entry HTML fails `parse_entry` could still
+  read `no_content_found == False` while zero notes are actually written.
+  It's a reliable "nothing written at all" signal only to the extent
+  discovery matches writes. Found by the 2026-07-06 red-team panel;
+  deferred (same class as the `parse_entry`-None-drop gap above, not
+  separately fixed).
+- **Pointing the converter at a non-Notion-export directory used to
+  silently "succeed" (Q2, fixed, extended by L1).** `run_conversion`
+  detects the "nothing was written at all" case — 0 database entries, 0
+  standalone pages, AND (since L1) 0 orphaned files copied — and prints an
+  explicit `WARNING: no Notion content found in <path>...` line, plus sets
+  `summary["no_content_found"] = True` so a library caller can check for it
+  without diffing file counts. It still exits 0 (a genuinely empty export
+  directory is a legitimate, non-error input), but the outcome is now loud
+  and machine-detectable instead of looking identical to a real
+  conversion. L1 closed the false-positive case where a directory held
+  only non-HTML orphan files (PDFs, images, loose attachments): those are
+  copied by `copy_orphaned_files` and are now correctly treated as real
+  (if HTML-less) output, not an empty conversion. Remaining gap: a stray
+  non-node `.html` file sitting *alongside* real content that WAS found is
+  still silently dropped (not converted, not copied as an orphan) — this
+  warning only fires on the all-zero case. Found by the 2026-07-06
+  red-team panel; the all-zero case fixed alongside K1 (`run_conversion`
+  input validation) and L1 (orphan-only directories).
+- **An uncaught mid-run exception loses the accumulated report (Q3,
+  reachability unconfirmed).** `_emit_conversion_report` only runs at the
+  very end of `run_conversion`; an exception anywhere earlier (e.g. inside
+  the unhandled `_symlink_filtered_attachments`) means every warning
+  accumulated for whatever partial output was already written is lost,
+  with no report file at all. Found by the 2026-07-06 red-team panel;
+  deferred.
+- **`notion2obsidian-fix-dates` exits 0 even with unparseable values
+  (Q4).** Unparseable date-keyed values are logged as `WARN` lines but
+  don't affect the process exit code, so a scripted/CI caller can't
+  detect a partial failure from the exit status alone. Pre-existing;
+  found by the 2026-07-06 red-team panel; deferred.
+- **A loose top-level file that merely LOOKS like a database entry used to
+  crash the entire run (M1, fixed).** A single top-level `.html` directly
+  under the export root whose markup contains the substring
+  `class="properties"` (e.g. an empty properties table — the shape
+  produced when a single Notion DB row is exported standalone) was
+  misclassified as an "entry" by `classify_html`'s naive substring match,
+  grouped into a fake database whose `entries_folder` was `src` itself,
+  and then crashed the whole conversion with an unhandled `ValueError`
+  (`mirror_output_dir` computing a path outside `src`) — no traceback
+  caught, no output, no report. Fixed: `discover_tree` now recognizes an
+  `entries_folder == src` as structurally not a real database (nothing to
+  nest under) and instead converts each such entry as a **standalone page
+  at the output root**, by its own filename, with an explicit warning
+  naming the file in `_conversion_report.md`. `classify_html`'s
+  classification heuristic itself was intentionally left unchanged — that
+  ambiguity (a loose file substring-matching the properties marker without
+  being a real DB row) is the same class of gap as Q1 above, just no
+  longer fatal. Found by the 2026-07-06 round-10 red-team; fixed same day.
+  `test_loose_toplevel_entry.py`.
+- **A Notion property literally named `Aliases`/`aliases`/`cssclasses`
+  round-trips verbatim into frontmatter under that literal key (M2,
+  unconfirmed).** Obsidian treats `aliases` and `cssclasses` as reserved
+  frontmatter keys — `aliases` in particular drives note-linking identity.
+  Unlike the `tags` key (which already gets case-insensitive matching plus
+  sanitization, see the comment in `notion_db_to_obsidian.py` ~line 1920),
+  neither key gets any special handling: a Notion property of that exact
+  name lands verbatim in frontmatter, which could silently make a note
+  answerable to unintended aliases. Plausible but **not verified against a
+  real Obsidian instance**. Found by the 2026-07-06 round-10 red-team;
+  deferred as a separate, larger scoped change (extending the tags-style
+  guard to other reserved keys); tracked in the maintainer's private backlog.
+
+### Maintenance
+
+This is a personal tool, shared as-is. Issues and PRs are welcome, but
+there's no response SLA.
 
 ---
 
-- **Decision log:** see [`CHANGELOG.md`](../CHANGELOG.md) for context, alternatives, and trade-offs behind each significant change.
+- **Decision log:** see [`CHANGELOG.md`](../../CHANGELOG.md) for context, alternatives, and trade-offs behind each significant change.
+- **Roadmap:** see [`ROADMAP.md`](../../ROADMAP.md) for larger, not-yet-started ideas (e.g. a generic multi-source converter).

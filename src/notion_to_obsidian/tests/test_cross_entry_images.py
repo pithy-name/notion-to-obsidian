@@ -12,7 +12,7 @@ rewritten to a relative path back into the source export. The fix is a single
 prefix (the relpath from the output dir to the source folder) prepended to
 EVERY local href — which fixes same-entry and cross-entry uniformly.
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_cross_entry_images.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util
@@ -21,7 +21,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-_MOD_PATH = Path(__file__).with_name("notion_db_to_obsidian.py")
+_MOD_PATH = Path(__file__).parent.parent / "notion_db_to_obsidian.py"
 _spec = importlib.util.spec_from_file_location("notion_db_to_obsidian", _MOD_PATH)
 ndo = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ndo)

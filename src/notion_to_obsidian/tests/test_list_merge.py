@@ -7,7 +7,7 @@ markdownify renders as a "loose" list (a blank line between every item).
 convert_body() must merge runs of adjacent same-kind sibling lists into one
 list first, so the output is a tight Markdown list.
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_list_merge.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util
@@ -17,7 +17,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 
 # Load the space-named module by path.
-_MOD_PATH = Path(__file__).with_name("notion_db_to_obsidian.py")
+_MOD_PATH = Path(__file__).parent.parent / "notion_db_to_obsidian.py"
 _spec = importlib.util.spec_from_file_location("notion_db_to_obsidian", _MOD_PATH)
 ndo = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ndo)

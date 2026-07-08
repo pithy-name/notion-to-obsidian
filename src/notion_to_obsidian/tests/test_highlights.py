@@ -6,7 +6,7 @@ Notion marks highlighted text with `block-color-*_background`. We wrap such an
 element's inline content in `==`. Block-container backgrounds are skipped, plain
 text colors are left alone, and callouts (handled earlier) are excluded.
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_highlights.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-_MOD_PATH = Path(__file__).with_name("notion_db_to_obsidian.py")
+_MOD_PATH = Path(__file__).parent.parent / "notion_db_to_obsidian.py"
 _spec = importlib.util.spec_from_file_location("notion_db_to_obsidian", _MOD_PATH)
 ndo = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ndo)

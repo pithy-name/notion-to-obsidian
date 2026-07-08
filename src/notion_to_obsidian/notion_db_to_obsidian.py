@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import functools
 import json
 import os
 import re
@@ -159,6 +160,22 @@ def parse_entry(html_path: Path) -> Optional[Dict[str, Any]]:
 
     body = article.find("div", class_="page-body")
 
+    # B1 (attempted, blocked — see README Known Issues): a landing/root page's own COVER
+    # IMAGE lives outside <div class="page-body"> (typically a <div>/<img> or
+    # <figure> near the top of <article>, before page-body, per Notion's
+    # general "cover image sits above the title" convention). Its href would
+    # need the same copy-path rewrite convert_body already applies to in-body
+    # images, so a regular entry's images rewrite fine — only this outside-
+    # page-body cover element does not. We did not extend parsing to pick it
+    # up: there is no real Notion export sample accessible in this repo to
+    # verify the actual cover-image markup shape (reading `test-output/` is
+    # off-limits), and shipping a fix built only against invented markup
+    # risks a change that "passes" its own synthetic test while doing nothing
+    # — or the wrong thing — against a real export. The image-href rewrite
+    # path this would need to reuse (see convert_body's `<img>` loop) is
+    # itself verified working. Left as a known limitation; see B1 in
+    # README Known Issues.
+
     return {
         "path": html_path,
         "title": title,
@@ -198,6 +215,25 @@ def parse_notion_date(text: str) -> Optional[str]:
         except ValueError:
             continue
     return None
+
+
+def parse_notion_date_range_end(text: str) -> Optional[str]:
+    """
+    B9: a Notion date RANGE property renders as "Jan 2, 2024 → Jan 5, 2024".
+    `parse_notion_date` (above) keeps only the start — Obsidian has no native
+    date-range type, so per the recommended option (A) in README Known Issues, the END
+    date is emitted as a companion `<Prop> (end)` frontmatter property
+    instead of being dropped. Returns the end date's ISO 8601 form (or the
+    raw end text if unparseable), or None if `text` is not a range.
+    """
+    text = text.strip().lstrip("@")
+    if " → " not in text:
+        return None
+    _start, end_text = text.split(" → ", 1)
+    end_text = end_text.strip()
+    if not end_text:
+        return None
+    return parse_notion_date(end_text) or end_text
 
 
 def td_inner_markdown(td: Tag) -> str:
@@ -241,11 +277,21 @@ def convert_property_value(ptype: str, td: Tag) -> Any:
         values = [s.get_text(strip=True) for s in td.find_all("span", class_="selected-value")]
         return values or None
 
-    # Single select / status: one string
+    # Single select / status: one string.
+    # NOTE (B8): when schema type-drift makes this entry's actual value carry
+    # MULTIPLE selected-value spans (its own row was really multi_select, but
+    # the dominant type across the database is select/status), grabbing only
+    # the first span silently drops the rest — genuine data loss. Collect every
+    # span and return a list when there's more than one, regardless of which
+    # type name was passed in; a true single-select row only ever has one span,
+    # so this is a no-op for the common case.
     if ptype in ("select", "status"):
-        span = td.find("span", class_="selected-value")
-        if span:
-            return span.get_text(strip=True) or None
+        spans = td.find_all("span", class_="selected-value")
+        if spans:
+            values = [s.get_text(strip=True) for s in spans if s.get_text(strip=True)]
+            if not values:
+                return None
+            return values if len(values) > 1 else values[0]
         return raw_text or None
 
     # Checkbox: bool
@@ -764,6 +810,131 @@ def _code_language(pre_tag: Tag) -> str:
     return ""
 
 
+def _convert_equations(
+    body_tag: Tag,
+    equation_map: Dict[str, str],
+    *,
+    warnings: Optional[List[str]] = None,
+) -> None:
+    """
+    Convert Notion equation blocks into fenced LaTeX Obsidian renders natively.
+
+    Notion exports a BLOCK equation as
+        <figure class="equation">…<annotation encoding="application/x-tex">E=mc^2</annotation>…</figure>
+    which markdownify would otherwise drop entirely (no text-only fallback) —
+    genuine data loss (B7). Obsidian's built-in LaTeX renderer (MathJax)
+    typesets `$$...$$` (block) and `$...$` (inline) natively, no plugin
+    required, so converting to that syntax is functional, not just
+    source-preservation.
+
+    Minimal viable per the investigation behind B7: preserve the LaTeX
+    source as text. Block equations (the documented, confirmed export shape)
+    become `$$tex$$` on their own line, by replacing the whole
+    `<figure class="equation">` (a block figure is a self-contained
+    single-equation unit — one figure = one equation, no sharing observed —
+    so whole-figure replacement is safe).
+
+    Any remaining bare `<annotation encoding="application/x-tex">` NOT
+    inside a block-equation figure (Notion's inline-equation shape isn't
+    confirmed against a real export sample) is treated as inline and
+    wrapped `$tex$` — a best-effort fallback so an inline equation is never
+    silently dropped even if its exact wrapper markup differs from what's
+    assumed here.
+
+    J1 (round-5 red-team, definitive fix): FOUR consecutive red-team rounds
+    (G3, H1, I1, and round 5) each found a NEW silent-data-loss or crash bug
+    in decompose/replace-the-ancestor-wrapper logic for inline equations —
+    sibling prose deleted, a sibling equation deleted, a crash on a detached
+    node, and (round 5) N-1 of N equations sharing one `<math>` silently
+    lost under realistic MathJax `<semantics>/<mrow>` nesting, because
+    mutating an ancestor mid-iteration corrupted the live tree the loop was
+    still scoping against. Rather than patch the scoping heuristic again,
+    the inline path now mutates ONLY the `<annotation>` node itself — never
+    any ancestor (`<math>`, `<span>`, `<semantics>`, ...). This is safe by
+    construction: with no ancestor ever touched, there is no wrapper-scoping
+    decision to get wrong and no mutation-during-iteration hazard,
+    regardless of markup shape, nesting depth, or how many equations share a
+    wrapper. Trade-off: sibling presentation MathML (`<mrow>`, `<mi>`,
+    `<mo>`, ...) is left in the tree and markdownify may render it as
+    adjacent plain-text "residue" next to the `$tex$` — cosmetic, and
+    strictly preferable to the silent data loss the wrapper-deletion
+    approach caused; see README Known Issues.
+
+    B7 (escaping): the raw `$$tex$$` / `$tex$` text cannot be inserted
+    directly into the soup — the WHOLE body still goes through markdownify
+    afterward, which backslash-escapes markdown-special characters in every
+    text node (`_` and `*` are common in LaTeX: `$$x\\_i \\* c$$`), corrupting
+    the equation. Instead, insert an opaque alphanumeric placeholder (no
+    markdown-special characters, so markdownify passes it through
+    unescaped) and record placeholder -> raw LaTeX in `equation_map`; the
+    caller substitutes the raw text back into the markdown AFTER
+    markdownify has run.
+
+    An equation node with empty/missing TeX is dropped (nothing to preserve)
+    but that is a silent-failure risk if unreported, so a line is appended to
+    `warnings` (when given) for every dropped equation.
+    """
+    def _placeholder() -> str:
+        return f"NOTIONEQPLACEHOLDER{len(equation_map)}ENDPLACEHOLDER"
+
+    for fig in body_tag.find_all("figure", class_=lambda c: c and "equation" in c):
+        annotation = fig.find("annotation", attrs={"encoding": "application/x-tex"})
+        tex = (annotation.get_text(strip=True) if annotation else fig.get_text(strip=True))
+        if not tex:
+            if warnings is not None:
+                warnings.append(
+                    "dropped a block equation with empty/missing TeX annotation "
+                    "(nothing to preserve)."
+                )
+            fig.decompose()
+            continue
+        placeholder = _placeholder()
+        equation_map[placeholder] = f"$${tex}$$"
+        new_p = _TAG_FACTORY.new_tag("p")
+        new_p.string = placeholder
+        fig.replace_with(new_p)
+
+    # Any TeX annotation not already consumed by the block-equation pass
+    # above (i.e. not inside a <figure class="equation">) — best-effort
+    # inline handling.
+    # J1 (round-5 red-team, CRITICAL regression of I1): every prior approach
+    # here (G3 through I1) decomposed/replaced some ANCESTOR of the
+    # <annotation> (a <span> or <math> wrapper), selected by a "is this
+    # wrapper exclusively scoped to one equation" heuristic. Each round found
+    # a NEW markup shape that heuristic mis-scoped -- most recently (round 5)
+    # realistic MathJax nesting where N equations share one <math>, each in
+    # its own `<semantics><mrow>...</mrow><annotation>...</annotation
+    # ></semantics>`: decomposing/replacing the first equation's ancestor
+    # mutates the tree the loop is still iterating, so the live re-check for
+    # the next annotation sees a corrupted/partial tree -- N-1 of N
+    # equations silently lost.
+    #
+    # J1 eliminates the entire bug class by construction: touch ONLY the
+    # `<annotation>` node being iterated, NEVER any ancestor. There is no
+    # wrapper-scoping decision left to get wrong, and no ancestor is ever
+    # mutated, so there is no mutation-during-iteration hazard -- this holds
+    # regardless of markup shape, nesting depth, or how many equations share
+    # a `<math>`/`<span>`. The trade-off: sibling presentation MathML
+    # (`<mrow>`, `<mi>`, `<mo>`, ...) is left in the tree and markdownify may
+    # render it as adjacent plain-text "residue" next to the `$tex$`. This is
+    # cosmetic, and strictly preferable to the silent DATA LOSS the
+    # wrapper-deletion approach caused across four red-team rounds; see
+    # README Known Issues.
+    for annotation in body_tag.find_all("annotation", attrs={"encoding": "application/x-tex"}):
+        tex = annotation.get_text(strip=True)
+        if not tex:
+            if warnings is not None:
+                warnings.append(
+                    "dropped an inline equation annotation with empty TeX "
+                    "(nothing to preserve)."
+                )
+            annotation.decompose()
+            continue
+        placeholder = _placeholder()
+        equation_map[placeholder] = f"${tex}$"
+        annotation.replace_with(NavigableString(placeholder))
+
+
 def _convert_iframes(body_tag: Tag) -> None:
     """
     Notion embed blocks (YouTube, Maps, Figma, …) export as an <iframe>
@@ -794,6 +965,7 @@ def convert_body(
     new_attachment_dir_basename: Optional[str],
     wikilink_map: Dict[str, str],
     inplace_link_prefix: Optional[str] = None,
+    warnings: Optional[List[str]] = None,
 ) -> str:
     """
     Convert the <div class="page-body"> tag into Markdown.
@@ -804,6 +976,10 @@ def convert_body(
       - Replace local-file source <figure> blocks with [filename](path) links.
       - Rewrite <a href="OldFolder%20uuid/file.pdf"> → "NewFolder/file.pdf".
       - Rewrite <a href="OtherEntry%20uuid.html">Title</a> → [[Title]].
+      - An in-page `#fragment` anchor, or an ".html" link that never resolves
+        to a node in `wikilink_map` (B6: e.g. it targets a DIFFERENT export,
+        or the target's filename diverged) is converted to plain visible
+        text — never left as a raw, broken ".html"/"#fragment" href.
 
     `inplace_link_prefix` (inplace attachment mode only): every local href in a
     Notion export is relative to the shared source-entries folder — whether it
@@ -812,6 +988,9 @@ def convert_body(
     onto every local href, so same-entry AND cross-entry attachments resolve to
     the real files in the source export. When None, the copy/symlink behavior
     applies (only this entry's own folder is rewritten).
+
+    `warnings`, if given, gets one line appended per unresolved link (fragment
+    or cross-export ".html") converted to plain text.
     """
     if body_tag is None:
         return ""
@@ -824,6 +1003,15 @@ def convert_body(
     # so we don't have to deal with their nested mess later.
     _clean_bookmark_figures(body_tag)
     _clean_source_figures(body_tag)
+
+    # Notion equations (<figure class="equation"> / inline TeX annotations) →
+    # fenced LaTeX ($$...$$ / $...$) Obsidian renders natively (B7 — markdownify
+    # otherwise drops them entirely). Raw LaTeX is placeholder-protected here
+    # and substituted back in after markdownify runs (see equation_map below;
+    # markdownify backslash-escapes `_`/`*`, which are common in LaTeX, so the
+    # raw text cannot survive a direct insertion into the soup).
+    equation_map: Dict[str, str] = {}
+    _convert_equations(body_tag, equation_map, warnings=warnings)
 
     # Notion embed blocks (<iframe>) → a link to the embedded URL (markdownify
     # would otherwise drop the iframe and lose the URL entirely).
@@ -857,9 +1045,55 @@ def convert_body(
             continue
         decoded = unquote(href)
 
-        # External or anchor links: leave alone (NEVER visited).
-        if decoded.startswith(("http://", "https://", "mailto:", "#")):
+        # External links: leave alone (NEVER visited).
+        if decoded.startswith(("http://", "https://", "mailto:")):
             continue
+
+        # F4 (B6 gap): a href can be "<node>.html#some-block-id" — a link to
+        # ANOTHER node's specific block/heading, not a bare in-page anchor.
+        # Neither the wikilink_map lookup below nor the unresolved-".html"
+        # fallback after it matched this shape before: the map is keyed on
+        # the bare ".html" filename with no fragment, and the fallback's own
+        # `.endswith(".html")` check fails once a "#fragment" tail is
+        # appended. Split the fragment off before either check; a resolved
+        # pre-fragment part still becomes a wikilink (we don't track heading
+        # ids, so the fragment is dropped — this converter has no way to
+        # link INTO a specific block), and an unresolved one still gets the
+        # plain-text fallback + warning.
+        #
+        # G1 (regression fix): split on "#" using the RAW, still-percent-
+        # encoded href — NOT the already-unquoted `decoded` string. A real
+        # fragment delimiter is always a literal "#" in the raw href; a "#"
+        # that is part of the target's own title (e.g. a page titled
+        # "C# Notes") is exported percent-encoded as "%23" and only becomes
+        # a literal "#" after unquote(). Splitting the decoded string
+        # truncated the lookup at the title's own "#", so the link missed
+        # both the wikilink map and the ".html" fallback (the ".html" was
+        # sliced into the discarded "fragment" half) with no warning.
+        raw_path, raw_frag_sep, _raw_fragment = href.partition("#")
+
+        # A bare "#fragment" (nothing before the "#" in the raw href): an
+        # in-page heading anchor. This converter doesn't track Notion's
+        # heading ids, so it can never resolve in Obsidian — it would
+        # render as a raw, permanently-broken `#fragment` href. Drop the
+        # link, keep the visible text (B6).
+        if not raw_path and raw_frag_sep:
+            if warnings is not None:
+                warnings.append(
+                    f"unresolved in-page anchor link {href!r} converted to "
+                    "plain text (heading ids are not tracked)."
+                )
+            a.replace_with(a.get_text())
+            continue
+
+        # G2 (F4 gap): also strip a "?query" suffix off the raw path (same
+        # before-unquote reasoning as the fragment split above) so
+        # "Node.html?src=abc" — which would otherwise match neither the
+        # wikilink map nor the ".html" fallback's `.endswith(".html")`
+        # check — still resolves or falls back instead of silently
+        # dropping through untouched.
+        raw_path_noquery, _raw_q_sep, _raw_query = raw_path.partition("?")
+        lookup = unquote(raw_path_noquery)
 
         # Link to another node anywhere in the export -> [[wikilink]].
         # `wikilink_map` is keyed on each node's filename (basename). An entry
@@ -869,12 +1103,26 @@ def convert_body(
         # basename. Filenames are vault-unique (they keep the Notion hex), so the
         # basename resolves unambiguously. Checked before any attachment rewrite
         # so .html links never become paths.
-        if decoded in wikilink_map:
-            a.replace_with(f"[[{wikilink_map[decoded]}]]")
+        if lookup in wikilink_map:
+            a.replace_with(f"[[{wikilink_map[lookup]}]]")
             continue
-        decoded_base = decoded.rsplit("/", 1)[-1]
-        if decoded_base != decoded and decoded_base in wikilink_map:
-            a.replace_with(f"[[{wikilink_map[decoded_base]}]]")
+        lookup_base = lookup.rsplit("/", 1)[-1]
+        if lookup_base != lookup and lookup_base in wikilink_map:
+            a.replace_with(f"[[{wikilink_map[lookup_base]}]]")
+            continue
+
+        # An ".html" href that matched no node in this export at all (B6) —
+        # it points into a DIFFERENT export, or the target's filename
+        # diverged from this href. Left alone it would be a raw, dead
+        # ".html" path in the output; there is nothing to resolve it to, so
+        # convert to plain visible text rather than ship a broken link.
+        if lookup_base.lower().endswith(".html"):
+            if warnings is not None:
+                warnings.append(
+                    f"unresolved cross-export link {href!r} converted to "
+                    "plain text (no matching node in this export)."
+                )
+            a.replace_with(a.get_text())
             continue
 
         # Inplace mode: prefix the relpath to the source export onto every local
@@ -921,6 +1169,33 @@ def convert_body(
         bullets="-",
         code_language_callback=_code_language,
     )
+    # B7: substitute the raw LaTeX back in now that markdownify (which would
+    # have backslash-escaped `_`/`*` inside it) has already run.
+    #
+    # G7 (collision-safety hardening): a naive sequential
+    # `for ph, tex in equation_map.items(): md = md.replace(ph, tex)` is not
+    # atomic — if an EARLIER equation's raw TeX literally contains a LATER
+    # equation's placeholder token, that later `.replace()` call would match
+    # inside the text just spliced in by the earlier one, corrupting/gluing
+    # the two equations together. Real-world reachability is essentially nil
+    # (requires the source doc to contain the internal placeholder token
+    # format), but the mechanism should be collision-safe regardless. A
+    # single `re.sub` pass over the placeholder pattern scans the ORIGINAL
+    # string once and does not rescan replacement text, so a substituted
+    # value can never be re-matched.
+    if equation_map:
+        _placeholder_re = re.compile(r"NOTIONEQPLACEHOLDER\d+ENDPLACEHOLDER")
+        md = _placeholder_re.sub(lambda m: equation_map.get(m.group(0), m.group(0)), md)
+        # Leftover-placeholder check: if any placeholder token survives
+        # restoration (e.g. markdownify mangled it so the regex above no
+        # longer matches it exactly), that's a silent-corruption signal —
+        # a raw internal token would otherwise ship in the user's markdown
+        # with no indication anything went wrong.
+        if warnings is not None and _placeholder_re.search(md):
+            warnings.append(
+                "one or more equation placeholder tokens were not restored "
+                "to their LaTeX source (possible equation corruption)."
+            )
     # Clean up extra blank lines markdownify can leave behind.
     md = re.sub(r"\n{3,}", "\n\n", md).strip()
     return md
@@ -1163,15 +1438,55 @@ def emit_types_json(
     if not isinstance(types_map, dict):
         types_map = {}
 
+    # G4 (F5 incomplete): the "<Prop> (end)" collision guard was added to
+    # write_entry but not here. Precompute every REAL schema key up front —
+    # same reasoning as write_entry's `schema_keys` — so a synthetic
+    # "<key> (end)" registration below can never occupy the slot before a
+    # real property of that exact name gets its turn in the loop (schema
+    # order is not the safety mechanism: a real "Duration (end)" property
+    # appearing AFTER "Duration" in schema order must still win with its own
+    # true type, not be preempted by the synthetic datetime registration).
+    real_keys = {info["key"] for info in schema.values()}
+
     added: List[str] = []
     for pname, info in schema.items():
         key = info["key"]
-        if key in types_map:
-            continue  # never clobber user choices
         dominant_ptype = info["types"].most_common(1)[0][0]
         otype = obsidian_type_for(key, dominant_ptype)
-        types_map[key] = otype
-        added.append(f"{key}={otype}")
+        # H2 (round-3 red-team, G4 cross-run gap) force-overwrote
+        # `types_map[key]` here for ANY real property whose on-disk type
+        # differed from this run's inference — not just the narrow stale-
+        # synthetic-"<Prop> (end)" case it targeted. That silently reverted
+        # a user's manual Obsidian-UI type customization on EVERY re-run
+        # (infer "Legs"=number, user retypes it "text" in Obsidian, re-run
+        # the same conversion and it gets stomped back to "number") —
+        # I2 (round-4 red-team): a worse regression than the rare cross-run
+        # collision H2 fixed, and it contradicted this function's own
+        # documented contract (see docstring above): existing entries are
+        # never touched, only missing keys are added. Restored that
+        # contract here. The narrow case H2 targeted (a stale synthetic
+        # "<Prop> (end)"=datetime persisted on disk from a PRIOR run
+        # shadowing a genuinely real property of that exact name in a LATER
+        # run) is a documented, accepted Known Issue instead — see
+        # README Known Issues (2026-07-06).
+        if key not in types_map:
+            types_map[key] = otype
+            added.append(f"{key}={otype}")
+        # B9: a date-range property may emit a companion "<key> (end)" value
+        # (see write_entry) on any entry whose raw value was a range. Register
+        # it as datetime too, so Bases sorts/types it correctly wherever it
+        # shows up — never clobbers an existing user choice for that key, and
+        # (G4) never preempts a REAL property of that exact name — the real
+        # property's own true type wins. NOTE: unlike write_entry, this
+        # function has no `warnings` accumulator threaded in for a
+        # per-collision message; the correctness fix (real type wins) stands
+        # on its own, but a collision here is currently silent — surfaced at
+        # the write_entry level instead, which does warn per-entry.
+        if dominant_ptype in ("date", "created_time", "last_edited_time"):
+            end_key = f"{key} (end)"
+            if end_key not in types_map and end_key not in real_keys:
+                types_map[end_key] = "datetime"
+                added.append(f"{end_key}=datetime")
 
     if not added and not corrupt:
         # Nothing to add and existing file is fine.
@@ -1194,16 +1509,29 @@ def emit_types_json(
     if not dry_run:
         types_path.write_text(content, encoding="utf-8")
     if added:
+        # B10: this is an ADDITIVE schema merge (new property keys added,
+        # nothing existing touched) — a different EVENT KIND from a file
+        # collision/preservation (an existing .base/.md that got a `.new`
+        # sibling, or was overwritten with --force). It used to share the
+        # same overwrite_log list with no distinguishing prefix, so the run
+        # summary's "any(w.startswith('OVERWROTE'))/else PRESERVED" heuristic
+        # mislabeled a benign schema update as "PRESERVED N existing
+        # file(s); new content written to .new siblings" — untrue; no .new
+        # file was ever written for this. Tagging it "SCHEMA-MERGED" (its own
+        # prefix, checked explicitly in _emit_conversion_report) keeps it out
+        # of both the OVERWROTE and PRESERVED buckets.
         overwrite_log.append(
-            f"{'WOULD UPDATE' if dry_run else 'Updated'} `.obsidian/types.json` "
-            f"(added {len(added)}: {', '.join(added)})."
+            f"{'WOULD SCHEMA-MERGE' if dry_run else 'SCHEMA-MERGED'} "
+            f"`.obsidian/types.json` (added {len(added)}: {', '.join(added)})."
         )
 
 
 # ---- Main pipeline ---------------------------------------------------------
 
 
-def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
+def _attachment_copy_ignore(
+    dir_path: str, names: List[str], warn_log: Optional[List[str]] = None
+) -> Set[str]:
     """`shutil.copytree` ignore callback: keep genuine attachments, drop child nodes.
 
     On a nested export an entry's source folder ("<Title> <hex>/") holds both
@@ -1214,7 +1542,11 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
     "<name> <hex>.html" dupes). Skip them; copy only true attachments.
 
     A name is child-node content iff it is one of:
-      - an "*.html" file (a node, converted to its own note);
+      - a "<Title> <32-hex>.html" file (a node, converted to its own note) —
+        matched by NOTION_ID_RE, NOT bare ".html". A saved web page or other
+        genuine HTML attachment sitting alongside real node content (e.g.
+        "some-page/index.html") has no Notion-id in its name and must survive
+        (B2: a blanket ".html" filter here used to drop it);
       - a directory with a sibling "<name>.html" in the same listing (the node's
         attachment folder); or
       - a directory that itself contains "*.html" files (a nested database
@@ -1234,18 +1566,82 @@ def _attachment_copy_ignore(dir_path: str, names: List[str]) -> Set[str]:
     a folder paired with an uppercase "<name>.HTML" (from a case-preserving tool)
     must be recognised too, or the node folder would leak while its html is
     filtered.
+
+    B3 (known limitation, no clean structural fix): the two DIRECTORY-filtering
+    rules below have no content-based check — a genuine user directory that
+    happens to be named like a Notion node (sibling "<name>.html", or itself
+    holding a hex-named ".html") is indistinguishable from a real node folder by
+    name alone, and gets filtered along with everything inside it. Rather than
+    fail silently, every directory filtered by either rule is reported via
+    `warn_log` (when given — the caller threads in `overwrite_log` so it
+    surfaces in `_conversion_report.md`) naming the path so a user can go check
+    it by hand. See README Known Issues, B3.
     """
     lower_names = {n.lower() for n in names}
     ignored: Set[str] = set()
     for name in names:
         child = os.path.join(dir_path, name)
-        if name.lower().endswith(".html"):
+        if name.lower().endswith(".html") and extract_notion_id(name):
             ignored.add(name)
         elif (name.lower() + ".html") in lower_names and os.path.isdir(child):
             ignored.add(name)
+            _warn_once(
+                warn_log,
+                f"WARN (B3, known limitation): directory `{child}` filtered "
+                "from the attachment copy — a sibling `<name>.html` makes it "
+                "look like that Notion node's own attachment folder. If this "
+                "is actually unrelated user content that happens to share the "
+                "name, its contents were NOT copied (no content-based check "
+                "is possible; see README Known Issues, B3).",
+            )
         elif os.path.isdir(child) and _dir_contains_node_html(child):
             ignored.add(name)
+            _warn_once(
+                warn_log,
+                f"WARN (B3, known limitation): directory `{child}` filtered "
+                "as a nested-database folder — it contains a Notion-node-"
+                "shaped `.html` file. If this is actually unrelated user "
+                "content, its contents were NOT copied (no content-based "
+                "check is possible; see README Known Issues, B3).",
+            )
     return ignored
+
+
+def _symlink_filtered_attachments(
+    src_dir: Path, dest_dir: Path, warn_log: List[str]
+) -> None:
+    """
+    Populate `dest_dir` with PER-FILE/PER-ENTRY symlinks into `src_dir`,
+    applying the same child-node filter used by copy mode
+    (`_attachment_copy_ignore`) — only genuine attachments get a symlink; a
+    Notion node's own ".html" and its hex-named folder are skipped.
+
+    B5: the old implementation symlinked the WHOLE `src_dir` as one directory
+    symlink, so Obsidian (or anything walking the output tree) saw straight
+    through it to every child node's raw ".html" + hex folder — exactly the
+    content the copy-mode filter exists to hide. Per-file symlinks close that
+    gap without ever copying bytes: `dest_dir` is a real directory; each
+    surviving entry inside it is a symlink to the corresponding entry in
+    `src_dir`.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    names = os.listdir(src_dir)
+    ignored = _attachment_copy_ignore(str(src_dir), names, warn_log=warn_log)
+    for name in names:
+        if name in ignored:
+            continue
+        (dest_dir / name).symlink_to((src_dir / name).resolve())
+
+
+def _warn_once(warn_log: Optional[List[str]], message: str) -> None:
+    """Append `message` to `warn_log` unless it's already the last entry.
+
+    `_attachment_copy_ignore` can be invoked multiple times for the same
+    directory (once as a pre-check, again by `shutil.copytree`'s own
+    recursion), which would otherwise duplicate the same WARN line.
+    """
+    if warn_log is not None and message not in warn_log:
+        warn_log.append(message)
 
 
 def _dir_contains_node_html(dir_path: str) -> bool:
@@ -1298,9 +1694,14 @@ def write_entry(
     `attachment_mode` controls how each entry's attachment dir is materialized
     in the output:
       - "copy" (default): full copy via shutil.copytree. Doubles disk usage.
-      - "symlink": create a symlink in the output that points at the source
-        attachment dir's absolute path. Zero extra disk usage; new md hrefs
-        reference `<NewDB>/<Entry>/file.pdf` and resolve through the symlink.
+      - "symlink": create a real directory in the output containing PER-FILE
+        symlinks (via `_symlink_filtered_attachments`) into the source
+        attachment dir — the same child-node filter used by copy mode is
+        applied first, so a Notion node's own ".html"/hex-folder never gets a
+        symlink (B5 fix: an earlier version symlinked the whole source dir,
+        exposing child-node content straight through it). Zero extra disk
+        usage for the attachment bytes themselves; new md hrefs reference
+        `<NewDB>/<Entry>/file.pdf` and resolve through the per-file symlink.
         Breaks if the source is later moved/deleted. Filesystem-level tested
         2026-05-05; Obsidian render not yet verified.
       - "inplace": no output-side directory or symlink is created. Md hrefs
@@ -1374,7 +1775,11 @@ def write_entry(
             copy_has_attachments = True
             if attachment_mode == "copy":
                 src_names = os.listdir(src_attach_dir)
-                _ignored = _attachment_copy_ignore(str(src_attach_dir), src_names)
+                # Computed unconditionally (dry-run included) so B3's ambiguous-
+                # directory WARN is always surfaced, not just on a real write.
+                _ignored = _attachment_copy_ignore(
+                    str(src_attach_dir), src_names, warn_log=overwrite_log
+                )
                 copy_has_attachments = any(nm not in _ignored for nm in src_names)
             # `is_symlink()` returns True for broken symlinks (where .exists()
             # is False), so check both to detect any existing target.
@@ -1394,18 +1799,23 @@ def write_entry(
                             shutil.rmtree(dest_attach)
                     if attachment_mode == "symlink":
                         if not dry_run:
-                            dest_attach.symlink_to(src_attach_dir.resolve())
+                            _symlink_filtered_attachments(
+                                src_attach_dir, dest_attach, overwrite_log
+                            )
                         overwrite_log.append(
                             f"{'WOULD OVERWRITE' if dry_run else 'OVERWROTE'} "
-                            f"existing target with symlink: `{dest_attach.name}` "
-                            f"→ `{src_attach_dir.resolve()}` "
-                            f"(--force, --symlink-attachments)."
+                            f"existing target `{dest_attach.name}/` with "
+                            f"per-file symlinks into `{src_attach_dir.resolve()}` "
+                            f"(--force, --symlink-attachments; child-node "
+                            f"HTML/folders skipped)."
                         )
                     elif copy_has_attachments:  # copy
                         if not dry_run:
                             shutil.copytree(
                                 src_attach_dir, dest_attach,
-                                ignore=_attachment_copy_ignore,
+                                ignore=functools.partial(
+                                    _attachment_copy_ignore, warn_log=overwrite_log
+                                ),
                             )
                         overwrite_log.append(
                             f"{'WOULD OVERWRITE' if dry_run else 'OVERWROTE'} "
@@ -1429,17 +1839,22 @@ def write_entry(
             else:
                 if attachment_mode == "symlink":
                     if not dry_run:
-                        dest_attach.symlink_to(src_attach_dir.resolve())
+                        _symlink_filtered_attachments(
+                            src_attach_dir, dest_attach, overwrite_log
+                        )
                     if dry_run:
                         overwrite_log.append(
-                            f"WOULD CREATE symlink `{dest_attach.name}` → "
-                            f"`{src_attach_dir.resolve()}`."
+                            f"WOULD CREATE `{dest_attach.name}/` with per-file "
+                            f"symlinks into `{src_attach_dir.resolve()}` "
+                            f"(child-node HTML/folders skipped)."
                         )
                 elif copy_has_attachments:  # copy
                     if not dry_run:
                         shutil.copytree(
                             src_attach_dir, dest_attach,
-                            ignore=_attachment_copy_ignore,
+                            ignore=functools.partial(
+                                _attachment_copy_ignore, warn_log=overwrite_log
+                            ),
                         )
                     if dry_run:
                         overwrite_log.append(
@@ -1458,6 +1873,14 @@ def write_entry(
         frontmatter["notion_uuid"] = entry["notion_uuid"]
     # Build a quick lookup for this entry's properties.
     entry_props: Dict[str, Tuple[str, Tag]] = {p[0]: (p[1], p[2]) for p in entry["properties"]}
+    # F5 (B9 collision): the synthetic "<Prop> (end)" key (below) must never
+    # clobber, or be silently shadowed by, a REAL property that happens to be
+    # named exactly that. Precompute every real schema key up front (schema
+    # order is independent of which property gets written first, so a
+    # forward-declared collision — a real "<Prop> (end)" property appearing
+    # LATER in schema order — needs this to be known before either is
+    # written, not discovered by checking frontmatter's current contents).
+    schema_keys = {i["key"] for i in schema.values()}
     for pname, info in schema.items():
         key = info["key"]
         # A property that is empty for THIS entry still appears in the YAML, as
@@ -1474,7 +1897,23 @@ def write_entry(
                 f"{entry['title']!r}: property {pname!r} is {ptype} on this page "
                 f"but {dominant_type} elsewhere; converted as {dominant_type}."
             )
-        value = convert_property_value(dominant_type, td)
+        # F3 (B8 gap): B8 only guards dominant select/status against a
+        # multi-valued cell (2+ selected-value spans). Any OTHER dominant
+        # type still dispatches straight to convert_property_value, which
+        # either drops the values entirely (dominant checkbox: neither
+        # checkbox-on/off nor the raw-text truthy check matches, -> False)
+        # or glues them together with no separator via td.get_text()
+        # (dominant date/number/person/text/etc.: "Red"+"Blue" -> "RedBlue").
+        # Detect the multi-valued shape BEFORE dispatching and preserve every
+        # value as a list — the same rendering B8 already gives dominant
+        # select/status — regardless of what dominant_type turned out to be.
+        multi_spans = td.find_all("span", class_="selected-value")
+        if len(multi_spans) >= 2 and dominant_type != "multi_select":
+            multi_values = [s.get_text(strip=True) for s in multi_spans if s.get_text(strip=True)]
+            value = (multi_values if len(multi_values) > 1
+                      else (multi_values[0] if multi_values else None))
+        else:
+            value = convert_property_value(dominant_type, td)
         if value is None:
             frontmatter[key] = None
             continue
@@ -1495,6 +1934,31 @@ def write_entry(
                     continue
                 value = [sv]
         frontmatter[key] = value
+        # B9: a date-range value ("Jan 2, 2024 → Jan 5, 2024") only carries
+        # its START through `value` (parse_notion_date takes the first side
+        # of the range). Obsidian has no native date-range type, so — per
+        # the recommended option in README Known Issues — emit the END date as a
+        # companion `<Prop> (end)` property (also date-typed) rather than
+        # dropping it. Only fires for date-like properties whose raw text is
+        # actually a range; a plain single date is unaffected.
+        if dominant_type in ("date", "created_time", "last_edited_time"):
+            raw_text = td.get_text(strip=True)
+            end_value = parse_notion_date_range_end(raw_text)
+            if end_value is not None:
+                end_key = f"{key} (end)"
+                if end_key in schema_keys:
+                    # A REAL property is named exactly this — never overwrite
+                    # it with the synthetic range-end value, and never let it
+                    # silently mask the fact that the range's end date went
+                    # unwritten because of the name collision.
+                    warnings.append(
+                        f"{entry['title']!r}: property {pname!r} is a date range, "
+                        f"but its synthesized end-date key {end_key!r} has a "
+                        "name collision with a real property of that name; "
+                        "the range's end date was NOT written."
+                    )
+                else:
+                    frontmatter[end_key] = end_value
 
     # Strip inline snapshot tables Notion embeds for nested databases.
     if nested_db_folder_hexes and entry.get("body"):
@@ -1517,6 +1981,7 @@ def write_entry(
         new_attachment_dir_basename=new_attach_basename,
         wikilink_map=wikilink_map,
         inplace_link_prefix=inplace_link_prefix,
+        warnings=warnings,
     )
 
     # Append inline tables for any nested databases owned by this entry.
@@ -1538,8 +2003,34 @@ def write_entry(
         contents += "\n" + body_md + "\n"
     # If this note is the "home" of one or more child databases, embed each
     # child's .base and list its entries as wikilinks (drives the graph).
-    for od in (owned_dbs or []):
-        contents += "\n## " + od["name"] + "\n"
+    # B11: when the owned DB's name is IDENTICAL to the page title (a common
+    # shape — a database's own index/landing page named after the database),
+    # the "## <DB>" section heading directly repeats the "# <title>" heading
+    # already emitted above it. Omit the redundant section heading in that
+    # case; the .base embed + entry list still follow directly under the
+    # page's own H1.
+    owned_dbs_list = owned_dbs or []
+    for od in owned_dbs_list:
+        # F9 (B11 exact-match gap): Notion index-page titles and database
+        # names commonly drift in case/markdown-heading-hash/whitespace only
+        # ("# Animals" page title vs "## animals " db name) while still
+        # being the "same name" for dedup purposes. An exact `!=` compare
+        # missed those and printed the redundant heading anyway.
+        #
+        # G5 (F9 over-wide): this dedup was built for the single-owned-DB
+        # shape (an index page named after its ONE database) and must not
+        # fire when the page owns 2+ databases — even if more than one of
+        # them casefold-matches the page title. Suppressing per-owned-DB
+        # independently in that case collapsed multiple ".base" embeds +
+        # entry lists under one bare title heading with nothing to tell
+        # them apart. Only dedup when there is exactly one owned DB.
+        name_matches_title = (
+            od["name"].strip().casefold() == entry["title"].strip().casefold()
+        )
+        if len(owned_dbs_list) == 1 and name_matches_title:
+            pass  # omit the redundant "## <name>" heading
+        else:
+            contents += "\n## " + od["name"] + "\n"
         contents += "\n![[" + od["base_name"] + ".base]]\n"
         if od.get("children"):
             contents += "\n" + "\n".join(f"- [[{c}]]" for c in od["children"]) + "\n"
@@ -1616,6 +2107,7 @@ def discover_tree(src: Path) -> Dict[str, Any]:
             return None
         return extract_notion_id(parent.name)
 
+    tree_warnings: List[str] = []
     databases: List[Dict[str, Any]] = []
     for ef, paths in entries_by_folder.items():
         h = extract_notion_id(ef.name)
@@ -1628,6 +2120,30 @@ def discover_tree(src: Path) -> Dict[str, Any]:
             "owner_hex": owner_hex_of(ef),
             "depth": len(ef.relative_to(src).parts),
         })
+
+    # M1: a database whose entries_folder IS `src` itself is not a real
+    # database — classify_html's naive `class="properties"` substring match
+    # can misclassify a loose top-level page as an "entry" (e.g. a standalone
+    # export of a single DB row, landing directly under `src` with no parent
+    # entries-folder — an empty `<table class="properties">` is enough to
+    # trip the match). Such an "entry" groups by html.parent == src, so
+    # downstream `mirror_output_dir(entries_folder.parent, src, out_root)`
+    # would need to go ABOVE src_root and raise ValueError, crashing the
+    # whole run. There is no parent structure to nest under here, so treat
+    # each such entry as a standalone page (placed at the output root by its
+    # own filename) instead — same fate as any other loose top-level page.
+    # No silent drop: still warned so it's visible in the run's report.
+    loose_databases = [db for db in databases if db["entries_folder"] == src]
+    if loose_databases:
+        databases = [db for db in databases if db["entries_folder"] != src]
+        for db in loose_databases:
+            for ep in db["entry_paths"]:
+                tree_warnings.append(
+                    f"Loose top-level file classified as a database entry "
+                    f"with no parent structure; converted as a standalone "
+                    f"page instead: {ep}"
+                )
+                page_paths.append(ep)
 
     # A "parent" page (collection-content) is only a database's index when its
     # hex matches that database's entries-folder. A parent page whose hex matches
@@ -1650,7 +2166,7 @@ def discover_tree(src: Path) -> Dict[str, Any]:
             "depth": len(p.relative_to(src).parts) - 1,
         })
 
-    return {"databases": databases, "pages": pages}
+    return {"databases": databases, "pages": pages, "warnings": tree_warnings}
 
 
 def assign_unique_names(nodes: List[Dict[str, Any]]) -> None:
@@ -1699,7 +2215,8 @@ def copy_orphaned_files(
     *,
     overwrite_log: List[str],
     dry_run: bool = False,
-) -> int:
+    dir_out_overrides: Optional[Dict[Path, Path]] = None,
+) -> Tuple[int, int]:
     """Copy non-HTML source files that no node's attachment copy reaches.
 
     A Notion export can hold sections with NO entry HTML — a page exported as a
@@ -1727,11 +2244,36 @@ def copy_orphaned_files(
     logged. Re-runs are stable because the disambiguated name is reused when it
     already holds an identical copy.
 
-    Returns the count of files copied (or that would be copied, in dry-run).
+    `dir_out_overrides` (F1b) maps a RESOLVED source directory (a database's
+    `entries_folder`) to the disambiguated `out_dir` `run_conversion` already
+    picked for it (the `db_out_dir_claims` map, keyed by source dir instead of
+    output dir). Two same-named sibling databases both hex-strip to the same
+    plain `mirror_output_dir` result, so without this override a loose orphan
+    file physically inside the SECOND same-named database's entries folder
+    would resolve to the FIRST database's output dir and only be rescued by
+    the byte-diff collision-rename fallback above — landing next to the wrong
+    database's entries instead of its own. When a file's parent (or an
+    ancestor of it, for files nested deeper inside that folder) matches an
+    override, the override's out_dir is used as the base instead of the plain
+    hex-stripped mirror, preserving any sub-path between the matched directory
+    and the file's actual parent.
+
+    Returns a `(copied, present)` tuple: `copied` is the count of files copied
+    (or that would be copied, in dry-run) THIS run; `present` is the total
+    count of orphaned source files that end up existing at their destination
+    once this run completes — `copied` plus files an earlier run already
+    placed (byte-identical, so this run skipped them as "nothing new to
+    do"). `copied` is what the console/report "N orphaned file(s) copied"
+    line means; `present` is the one to use for an "is the output vault
+    non-empty" signal — a re-run against the same src/out pair correctly
+    reports `copied == 0` (idempotent, no new work) but `present` still
+    reflects the orphaned content that is actually sitting in `out_root`.
     """
     src_resolved = src.resolve()
+    dir_out_overrides = dir_out_overrides or {}
     claimed: Set[Path] = set()            # dests already taken this run (dry too)
     copied = 0
+    present = 0
     for path in sorted(src.rglob("*")):
         if not path.is_file():
             continue
@@ -1755,16 +2297,36 @@ def copy_orphaned_files(
         # file" if this run already claimed it, or it exists on disk with
         # different bytes. Two source folders can hex-strip to the same output
         # dir, so disambiguate rather than overwrite — never silently drop.
-        base = mirror_output_dir(path.parent, src, out_root) / path.name
+        #
+        # F1b: prefer an already-disambiguated dir_out_overrides mapping over
+        # the plain hex-stripped mirror. Walk from path.parent up to
+        # src_resolved looking for the NEAREST ancestor with an override (a
+        # database's entries_folder); if found, rebuild the destination as
+        # that override's out_dir plus whatever sub-path sits between the
+        # matched ancestor and the file's actual parent.
+        parent_resolved = path.parent.resolve()
+        override_base: Optional[Path] = None
+        anc = parent_resolved
+        while True:
+            if anc in dir_out_overrides:
+                sub_parts = parent_resolved.relative_to(anc).parts
+                override_base = dir_out_overrides[anc].joinpath(*sub_parts)
+                break
+            if anc == src_resolved or anc.parent == anc:
+                break
+            anc = anc.parent
+        base = (override_base or mirror_output_dir(path.parent, src, out_root)) / path.name
         dest, attempt, clashed = base, 1, False
         while dest in claimed or (dest.exists() and not filecmp.cmp(path, dest, shallow=False)):
             clashed = True
             attempt += 1
             dest = base.with_name(f"{base.stem} ({attempt}){base.suffix}")
         if dest not in claimed and dest.exists():
-            continue                      # identical copy already on disk → done
+            present += 1                  # identical copy already on disk → done
+            continue
         claimed.add(dest)
         copied += 1
+        present += 1
         if clashed:
             overwrite_log.append(
                 f"COLLISION: orphaned file `{path.name}` mapped to an existing "
@@ -1778,7 +2340,7 @@ def copy_orphaned_files(
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, dest)
-    return copied
+    return copied, present
 
 
 def run_conversion(
@@ -1810,6 +2372,10 @@ def run_conversion(
     """
     src = Path(src).expanduser().resolve()
     out_root = Path(out_root).expanduser().resolve()
+    if not src.exists():
+        raise FileNotFoundError(f"Notion export path does not exist: {src}")
+    if not src.is_dir():
+        raise NotADirectoryError(f"Notion export path is not a directory: {src}")
     if not dry_run:
         out_root.mkdir(parents=True, exist_ok=True)
 
@@ -1833,12 +2399,38 @@ def run_conversion(
         )
         db_name = None
 
+    # Stable processing order → deterministic disambiguation below.
+    databases.sort(key=lambda db: str(db["entries_folder"]))
+
     # Parse entries, build per-database schema, and resolve the mirrored folder.
+    # B4: mirror_output_dir alone maps a DB folder to its output path by
+    # hex-STRIPPING every path component, so two distinct sibling databases
+    # that merely share a display name (their source folders are
+    # "<Name> <hexA>/" and "<Name> <hexB>/", each with its own unique hex)
+    # would both mirror to the SAME output dir and their entries would be
+    # written into one shared folder. Disambiguate DB output dirs the same
+    # way `assign_unique_names` disambiguates node filenames: the first
+    # claimant of a (parent dir, name) pair keeps the plain name; a later
+    # collision gets the short Notion id appended.
+    db_out_dir_claims: Dict[Path, int] = {}
     for db in databases:
         db["_parsed"] = [e for p in db["entry_paths"] if (e := parse_entry(p)) is not None]
         db["schema"] = discover_schema(db["_parsed"])
-        db["out_dir"] = mirror_output_dir(db["entries_folder"], src, out_root)
-        db["base_name"] = db["out_dir"].name
+        parent_out_dir = mirror_output_dir(db["entries_folder"].parent, src, out_root)
+        base_name = sanitize_filename(db["name"]) or "Untitled"
+        candidate_dir = parent_out_dir / base_name
+        if candidate_dir in db_out_dir_claims:
+            db_out_dir_claims[candidate_dir] += 1
+            sid = (db["hex"] or "")[-6:]
+            base_name = (
+                f"{base_name} ({sid})" if sid
+                else f"{base_name} ({db_out_dir_claims[candidate_dir]})"
+            )
+            candidate_dir = parent_out_dir / base_name
+        else:
+            db_out_dir_claims[candidate_dir] = 1
+        db["out_dir"] = candidate_dir
+        db["base_name"] = base_name
 
     # Node registry: every entry, index/landing page, and standalone page → a note.
     nodes: List[Dict[str, Any]] = []
@@ -1890,14 +2482,8 @@ def run_conversion(
         if db["owner_hex"] and db["hex"]:
             nested_hexes_by_owner_uuid[hex_to_uuid(db["owner_hex"])].add(db["hex"])
 
-    total_warnings: List[str] = []
+    total_warnings: List[str] = list(tree["warnings"])
     overwrite_log: List[str] = []
-    if attachment_mode == "symlink" and any(db["owner_hex"] for db in databases):
-        msg = ("symlink attachment mode on a NESTED export exposes child-node content "
-               "through the symlinked source folder; use --inplace-attachments (or the "
-               "default copy mode, which filters child nodes) for nested exports.")
-        print(f"WARNING: {msg}")
-        total_warnings.append(msg)
 
     # Assign each database a "home" note that embeds its base + lists its entries;
     # give every entry an `↑ Part of [[home]]` backlink.
@@ -1963,13 +2549,45 @@ def run_conversion(
         attach_dir = nd["parsed"]["path"].with_suffix("")
         if attach_dir.is_dir():
             covered_dirs.add(attach_dir.resolve())
-    n_orphaned = copy_orphaned_files(
-        src, out_root, covered_dirs, overwrite_log=overwrite_log, dry_run=dry_run
+    # F1b: a database's entries_folder may have been disambiguated away from
+    # the plain hex-stripped mirror path (db_out_dir_claims, B4). Feed that
+    # same mapping to the orphan pass so a loose file sitting directly in a
+    # same-named sibling database's entries folder lands in ITS db's
+    # disambiguated out_dir, not whichever same-named db claimed the plain dir.
+    db_dir_out_overrides: Dict[Path, Path] = {
+        db["entries_folder"].resolve(): db["out_dir"] for db in databases
+    }
+    n_orphaned, n_orphaned_present = copy_orphaned_files(
+        src, out_root, covered_dirs, overwrite_log=overwrite_log, dry_run=dry_run,
+        dir_out_overrides=db_dir_out_overrides,
     )
     if n_orphaned:
         print(
             f"  → {n_orphaned} orphaned file(s) "
             f"{'would be ' if dry_run else ''}copied (no entry HTML; preserved as attachments)"
+        )
+
+    # L1: nothing was written iff there were zero db entries, zero standalone
+    # pages, AND zero orphaned files present in the output. copy_orphaned_files
+    # can populate out_root even when no HTML node was ever discovered (a
+    # PDF-only export section, a folder of loose attachments) — that's a real,
+    # if HTML-less, conversion, not an empty one. The signal must wait until
+    # after the orphan-copy pass runs so its count is known; computing it
+    # earlier (keyed on n_db_entries/pages alone) made it a false positive
+    # whenever a directory held only non-HTML orphan files.
+    #
+    # Use n_orphaned_present (files present in the output once this run
+    # completes), not n_orphaned (files newly copied THIS run) — an idempotent
+    # re-run against the same src/out pair skips re-copying a byte-identical
+    # file already on disk, so n_orphaned would read 0 even though the output
+    # vault still holds real orphaned content from an earlier run.
+    no_content_found = n_db_entries == 0 and len(pages) == 0 and n_orphaned_present == 0
+    if no_content_found:
+        print(
+            f"WARNING: no Notion content found in {src} — 0 database entries, "
+            "0 standalone pages, and 0 orphaned files were discovered. This is "
+            "a valid but empty conversion; check that the export path is "
+            "correct if this is unexpected."
         )
 
     # Aggregate schema across all databases for the vault-wide artifacts.
@@ -2016,6 +2634,7 @@ def run_conversion(
         "dry_run": dry_run,
         "warnings": total_warnings,
         "overwrite_log": overwrite_log,
+        "no_content_found": no_content_found,
     }
     _emit_conversion_report(summary, src, out_root)
     return summary
@@ -2060,8 +2679,10 @@ def _emit_conversion_report(
             "source export, embedded files will break."
         )
     for db in databases:
-        mirrored = mirror_output_dir(db["entries_folder"], src, out_root)
-        rel = mirrored.relative_to(out_root)
+        # Use the already-resolved (possibly disambiguated, B4) out_dir rather
+        # than recomputing a bare mirror_output_dir — the latter would report
+        # the wrong (collided) path for a same-named sibling database.
+        rel = db["out_dir"].relative_to(out_root)
         lines.append(
             f"  - **{db['name']}** ({len(db['entry_paths'])} entries) "
             f"→ `{rel}/` (depth {db['depth']})"
@@ -2077,6 +2698,21 @@ def _emit_conversion_report(
         lines.append("## Per-entry warnings")
         for w in total_warnings:
             lines.append(f"- {w}")
+    # B10: classify overwrite_log entries by EVENT KIND before deciding what
+    # header/summary to print. A run that only added new schema keys to
+    # types.json (SCHEMA-MERGED) or only flagged an ambiguous directory
+    # filter (WARN, B3) has neither overwritten nor preserved any file — the
+    # old logic ("any OVERWROTE? else assume PRESERVED") mislabeled those
+    # runs as "PRESERVED N existing file(s); new content written to .new
+    # siblings", which was simply untrue (no .new file was ever written).
+    overwrite_events = [w for w in overwrite_log if w.startswith(("OVERWROTE", "WOULD OVERWRITE"))]
+    schema_merge_events = [w for w in overwrite_log if w.startswith(("SCHEMA-MERGED", "WOULD SCHEMA-MERGE"))]
+    warn_events = [w for w in overwrite_log if w.startswith("WARN")]
+    preserve_events = [
+        w for w in overwrite_log
+        if w not in overwrite_events and w not in schema_merge_events and w not in warn_events
+    ]
+
     if overwrite_log:
         lines.append("")
         if dry_run:
@@ -2087,9 +2723,9 @@ def _emit_conversion_report(
                 "re-ran without `--dry-run`. Nothing has been written."
             )
             lines.append("")
-        elif any(w.startswith("OVERWROTE") for w in overwrite_log):
+        elif overwrite_events:
             lines.append("## Overwrites (--force)")
-        else:
+        elif preserve_events:
             lines.append("## Skipped overwrites (existing files preserved)")
             lines.append("")
             lines.append(
@@ -2097,6 +2733,15 @@ def _emit_conversion_report(
                 "`.md` files. To preserve any hand-edits, the new content was "
                 "written next to the existing files with a `.new` suffix. Diff "
                 "and merge by hand, or re-run with `--force` to overwrite."
+            )
+            lines.append("")
+        else:
+            lines.append("## Notes")
+            lines.append("")
+            lines.append(
+                "No file was overwritten or preserved-as-`.new` this run. "
+                "Entries below are additive schema updates and/or WARNs "
+                "flagging a known limitation — see README Known Issues for context."
             )
             lines.append("")
         for w in overwrite_log:
@@ -2118,14 +2763,38 @@ def _emit_conversion_report(
         report.write_text("\n".join(lines) + "\n", encoding="utf-8")
         print(f"Wrote report: {report}")
         print(f"Output: {out_root}")
-        if overwrite_log:
-            if any(w.startswith("OVERWROTE") for w in overwrite_log):
-                print(f"  Overwrote {len(overwrite_log)} existing file(s) (--force).")
-            else:
-                print(
-                    f"  PRESERVED {len(overwrite_log)} existing file(s); new content "
-                    f"written to .new siblings. See _conversion_report.md."
-                )
+        # F6: total_warnings (type-drift, unresolved links, filename
+        # collisions, dropped equations, ...) was written to
+        # _conversion_report.md but never mentioned on the console — not even
+        # a count — unlike overwrite_log's WARN events just below, which DO
+        # get a console line. A user running for real, not reading the
+        # report file, had no signal anything needed attention.
+        if total_warnings:
+            print(
+                f"  {len(total_warnings)} conversion warning(s) — "
+                "see _conversion_report.md."
+            )
+        # B10: report each EVENT KIND with its own line — an additive schema
+        # merge and a WARN are neither an overwrite nor a preserved file, and
+        # must not be folded into the "PRESERVED N existing file(s)" count.
+        if overwrite_events:
+            print(f"  Overwrote {len(overwrite_events)} existing file(s) (--force).")
+        if preserve_events:
+            print(
+                f"  PRESERVED {len(preserve_events)} existing file(s); new content "
+                f"written to .new siblings. See _conversion_report.md."
+            )
+        if schema_merge_events:
+            print(
+                f"  SCHEMA-MERGED {len(schema_merge_events)} additive update(s) into "
+                f"`.obsidian/types.json` (no existing keys touched). "
+                f"See _conversion_report.md."
+            )
+        if warn_events:
+            print(
+                f"  {len(warn_events)} WARN(s) — known limitations flagged, not "
+                f"necessarily errors. See _conversion_report.md."
+            )
     print("Done.")
 
 
@@ -2186,14 +2855,17 @@ def main() -> int:
         action="store_true",
         help=(
             "Instead of copying each entry's attachment directory into the "
-            "output, create a symlink in the output that points at the "
-            "source attachment dir. Avoids duplicating attachment files on "
-            "disk. New md hrefs reference `<NewDB>/<Entry>/file.pdf` and "
-            "resolve through the symlink. If you later move or delete the "
-            "source export, the symlinks (and any md links into them) "
-            "break. Filesystem-level tested 2026-05-05; Obsidian render "
-            "not yet verified — spot-check one entry in Obsidian before "
-            "relying on it. Mutually exclusive with --inplace-attachments."
+            "output, create a real directory containing PER-FILE symlinks "
+            "into the source attachment dir (only genuine attachments — the "
+            "same child-node filter copy mode uses is applied, so a Notion "
+            "node's own HTML/hex-folder is never symlinked). Avoids "
+            "duplicating attachment files on disk. New md hrefs reference "
+            "`<NewDB>/<Entry>/file.pdf` and resolve through the per-file "
+            "symlink. If you later move or delete the source export, the "
+            "symlinks (and any md links into them) break. Filesystem-level "
+            "tested 2026-05-05; Obsidian render not yet verified — "
+            "spot-check one entry in Obsidian before relying on it. "
+            "Mutually exclusive with --inplace-attachments."
         ),
     )
     attach_mode_group.add_argument(

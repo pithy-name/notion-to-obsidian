@@ -3,27 +3,16 @@
 Tests for discover_tree(): builds the full nesting tree at any depth, with no
 depth ceiling and no "database required" rule. Run against the synthetic export.
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_discover_tree.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
-import importlib.util
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-_DIR = Path(__file__).parent
-
-
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, _DIR / filename)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-ndo = _load("notion_db_to_obsidian", "notion_db_to_obsidian.py")
-sx = _load("synthetic_export", "synthetic_export.py")
+import notion_db_to_obsidian as ndo
+import synthetic_export as sx
 
 
 class DiscoverTree(unittest.TestCase):

@@ -13,7 +13,7 @@ icon before reading the name.
 
 (Names below are fictional fixtures — no real data in this public repo.)
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_person_property.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util
@@ -22,7 +22,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-_MOD_PATH = Path(__file__).with_name("notion_db_to_obsidian.py")
+_MOD_PATH = Path(__file__).parent.parent / "notion_db_to_obsidian.py"
 _spec = importlib.util.spec_from_file_location("notion_db_to_obsidian", _MOD_PATH)
 ndo = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ndo)

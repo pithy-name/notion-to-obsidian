@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notion-to-obsidian"
+version = "0.1.0"
+description = "Convert a Notion HTML export into an Obsidian-ready vault of .md files with type-aware YAML frontmatter and a starter .base file."
+readme = "src/notion_to_obsidian/README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "beautifulsoup4>=4.11",
+    "markdownify>=1.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+notion2obsidian = "notion_to_obsidian.notion_db_to_obsidian:main"
+notion2obsidian-fix-dates = "notion_to_obsidian.fix_frontmatter_dates:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["notion_to_obsidian*"]
+exclude = ["notion_to_obsidian.tests"]

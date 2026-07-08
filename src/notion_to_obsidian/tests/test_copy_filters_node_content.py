@@ -82,13 +82,16 @@ class IgnoreCallbackEdges(unittest.TestCase):
         # Notion emits lowercase ".html", but a case-preserving tool could yield
         # "<X>.HTML". The node folder "<X>/" must still be recognised and skipped,
         # not leaked into the vault. The file filter is case-insensitive, so the
-        # sibling-dir match must be too.
-        (self.d / "Memo abc.HTML").write_text("x", encoding="utf-8")
-        (self.d / "Memo abc").mkdir()
+        # sibling-dir match must be too. Uses a real 32-hex Notion id (per B2,
+        # rule 1 only ignores hex-named node HTML, not any ".html").
+        node_html = "Memo 0123456789abcdef0123456789abcdef.HTML"
+        node_dir = "Memo 0123456789abcdef0123456789abcdef"
+        (self.d / node_html).write_text("x", encoding="utf-8")
+        (self.d / node_dir).mkdir()
         (self.d / "photo.png").write_text("x", encoding="utf-8")
         ignored = n._attachment_copy_ignore(str(self.d), os.listdir(self.d))
-        self.assertIn("Memo abc.HTML", ignored)
-        self.assertIn("Memo abc", ignored)        # the node folder
+        self.assertIn(node_html, ignored)
+        self.assertIn(node_dir, ignored)          # the node folder
         self.assertNotIn("photo.png", ignored)    # genuine attachment kept
 
     def test_attachment_dir_without_html_sibling_is_kept(self):
@@ -143,7 +146,7 @@ class CopyModeNoEmptyDirs(unittest.TestCase):
         # attachment (filtered) — nothing genuine survives the copy.
         dog_dir = src / folder("Animals") / folder("Dog")
         dog_dir.mkdir(parents=True, exist_ok=True)
-        (dog_dir / "loose-doc.html").write_text("<html><body>doc</body></html>", encoding="utf-8")
+        (dog_dir / "loose-doc 0123456789abcdef0123456789abcdef.html").write_text("<html><body>doc</body></html>", encoding="utf-8")
         n.run_conversion(src, out)  # default copy
         dog_out = out / "Animals" / "Dog"
         self.assertFalse(
@@ -159,7 +162,7 @@ class CopyModeNoEmptyDirs(unittest.TestCase):
         build(src)
         dog_dir = src / folder("Animals") / folder("Dog")
         dog_dir.mkdir(parents=True, exist_ok=True)
-        (dog_dir / "loose-doc.html").write_text("<html><body>doc</body></html>", encoding="utf-8")
+        (dog_dir / "loose-doc 0123456789abcdef0123456789abcdef.html").write_text("<html><body>doc</body></html>", encoding="utf-8")
         n.run_conversion(src, out)
         empties = sorted(
             str(p.relative_to(out)) for p in out.rglob("*")
@@ -202,7 +205,7 @@ class CopyModeForcePath(unittest.TestCase):
         # Childless "Dog" with only a stray .html (filtered → no genuine attachment).
         dog_dir = src / folder("Animals") / folder("Dog")
         dog_dir.mkdir(parents=True, exist_ok=True)
-        (dog_dir / "loose-doc.html").write_text("<html><body>doc</body></html>", encoding="utf-8")
+        (dog_dir / "loose-doc 0123456789abcdef0123456789abcdef.html").write_text("<html><body>doc</body></html>", encoding="utf-8")
         n.run_conversion(src, out)
         # Simulate a hand-curated output dir for Dog.
         out_dog = out / "Animals" / "Dog"

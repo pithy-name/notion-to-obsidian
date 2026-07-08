@@ -10,14 +10,14 @@ the original Notion property name verbatim (trimmed) as the frontmatter key.
 The one special case is the tag property: a "Tags" multi_select must still map
 to Obsidian's tag system, matched case-insensitively.
 
-Run:  /usr/bin/python3 "Notion Database to Obsidian/test_property_keys.py"
+Run: PYTHONPATH=src /usr/bin/python3 -m unittest discover -t src/notion_to_obsidian -s src/notion_to_obsidian/tests -p "test_*.py"
 """
 
 import importlib.util
 import unittest
 from pathlib import Path
 
-_MOD_PATH = Path(__file__).with_name("notion_db_to_obsidian.py")
+_MOD_PATH = Path(__file__).parent.parent / "notion_db_to_obsidian.py"
 _spec = importlib.util.spec_from_file_location("notion_db_to_obsidian", _MOD_PATH)
 ndo = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ndo)
